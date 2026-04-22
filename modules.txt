@@ -1,0 +1,72 @@
+Модуль 1 — Core Java + Concurrency + JVM
+
+1–14
+
+Модуль 2 — Databases (SQL + JDBC + Migrations)
+
+15–29
+
+Модуль 3 — Spring (Core + Hibernate)
+
+30–42
+
+Модуль 4 — Web (Spring MVC + Security)
+
+43–64
+
+Модуль 5 — Testing + CI/CD
+
+65–84
+
+Модуль 6 — Web Fundamentals (HTTP / REST)
+
+85–94
+
+Модуль 7 — Docker + Integration Testing
+
+95–109
+
+Модуль 8 — Caching + System Design
+
+110–130
+
+Почему так:
+
+caching — это часть архитектурных решений, а не “отдельный мир”
+логически они связаны (performance, scalability)
+
+Что ломается:
+
+если не понимаешь кэш → не понимаешь system design вообще
+Модуль 9 — Messaging (Kafka / Brokers)
+
+131–142
+
+Модуль 10 — NoSQL (Mongo + CAP)
+
+143–161
+
+Модуль 11 — Kubernetes
+
+162–175
+
+1. Write-Ahead Logging (WAL)
+2. MVCC
+3. VACUUM / Autovacuum
+4. Checkpoint
+5. Transaction Isolation Levels
+6. Locks in PostgreSQL
+7. Deadlocks
+8. Indexes in PostgreSQL
+9. Query Planner / EXPLAIN
+10. Heap Tuple Structure (xmin, xmax, ctid)
+11. HOT Update
+12. TOAST
+13. Replication (streaming, logical)
+14. Partitioning
+15. Connection Pooling
+16. Buffer Cache
+17. Write Amplification
+18. Bloat
+19. Statistics and ANALYZE
+20. Cost-based Optimizer
