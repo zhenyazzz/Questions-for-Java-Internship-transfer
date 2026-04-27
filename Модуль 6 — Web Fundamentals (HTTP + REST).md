@@ -2,7 +2,36 @@
 
 > Questions 85–94 from *Questions for Java Internship transfer.pdf* (client–server, HTTP/TLS, REST constraints, verbs and idempotency, status codes, cookies vs sessions, CORS, SOAP, gRPC vs REST). **Note:** questions **86** (HTTP vs HTTPS) and **92** (CORS) overlap thematically with **63** and **58** in `Модуль 4 — Web (Spring MVC + Security).md`; here the focus is **protocol and web platform** behavior, not Spring configuration.
 
+> Each numbered section ends with a **Middle+ answer** you can adapt on interview (monologue-style); bullets and tables above are for follow-up drilling.
+
+## Module summary (middle+ — how I’d frame it on interview)
+
+<a id="summary"></a>
+
+The web platform is **client–server over HTTP**: the **client initiates** every interaction; the **server** holds authoritative **data, invariants, and access control**. HTTP is not only “a wire format”—it carries **method semantics** (safe vs unsafe, idempotent vs not), **headers** (caching, auth, content negotiation), and **status codes** that tell clients, caches, and operators **what happened** and **who should react**. **HTTPS** wraps that same HTTP in **TLS**, so you get **confidentiality**, **integrity**, and **authenticated endpoints** (certificates; optional **mTLS** for clients).
+
+**REST** is an **architectural style** on top of HTTP (Fielding): **resources** identified by URLs, **representations** (often JSON), **stateless** processing, **cacheable** responses where possible, and a **uniform interface**. In production most “REST” APIs are **pragmatic**: CRUD-ish JSON, sometimes **RPC-shaped** URLs—acceptable if the team is explicit. What separates middle+ from junior answers is connecting this to **behavior under failure**: **PUT vs POST** and **idempotency** decide whether **retries** from gateways or clients are safe; **PATCH** is not magically idempotent; **status codes** drive **client retries**, **CDN behavior**, and **alerting**; **cookies vs sessions vs bearer tokens** is a **threat-model** choice (XSS, CSRF, storage); **CORS** is a **browser read policy**, not API security; **SOAP / gRPC / REST** is a **consumer and contract** choice (browser, tooling, streaming, governance).
+
+Spring-specific TLS, security headers, and CORS wiring overlap with **`Модуль 4 — Web (Spring MVC + Security).md`** (**questions 63** and **58**); this module stays at **protocol + platform** level.
+
+### Quick map (question → one line)
+
+| # | Topic | One-line takeaway |
+|---|--------|-------------------|
+| **85** | Client–server | Clients initiate; servers are authoritative; roles are logical (a service is a client to its upstream). |
+| **86** | HTTP vs HTTPS | HTTPS = HTTP + TLS (confidentiality, integrity, authentication); baseline for anything real. |
+| **87** | REST | Architectural constraints on HTTP; statelessness scales; many “REST” APIs relax HATEOAS / purity. |
+| **88** | PUT vs POST | Known resource URI + idempotent replace/create vs collection/action + server-chosen id; duplicates on POST. |
+| **89** | Idempotent methods | Safe reads vs mutating idempotent vs POST; PATCH is implementation-defined; drives retry safety. |
+| **90** | Status codes | Outcome + who fixes it; 401 vs 403; 404 can hide existence; 5xx for unexpected server-side failure. |
+| **91** | Cookies & sessions | Cookie = transport/storage; session = server-side state keyed by id (often cookie); harden flags. |
+| **92** | CORS | Browser-only cross-origin read policy; server opts in via headers; not curl/Postman security. |
+| **93** | SOAP | XML + WSDL + enterprise standards; legacy / regulated / strict interop—not wrong, often contextual. |
+| **94** | gRPC vs REST | gRPC: HTTP/2, protobuf, streaming, codegen—great service-to-service; REST+JSON: web/public/debuggability. |
+
 ## Table of contents
+
+- [Module summary (middle+)](#summary)
 
 85. [What is client-server architecture?](#q85)
 86. [What is the difference between HTTP and HTTPS?](#q86)
@@ -39,12 +68,21 @@ What is **client–server** architecture, and how does HTTP fit into it?
 ### 3. Interview nuance
 Contrast with **peer-to-peer** (symmetric nodes) and **monolith vs microservices** only when asked—client–server is about **who initiates** and **where stateful work** usually lives, not about deployment shape alone.
 
-### 4. Summary (Short speaking answer)
-Client–server architecture means that clients request services or data from servers over the network, and servers process those requests and return responses.
+### 4. Middle+ answer (as on interview)
 
-In web systems, browsers or mobile apps are typical clients, and HTTP servers expose APIs or pages. The client is responsible for presentation and user interaction, while the server holds business logic and data and enforces access rules.
+Client–server architecture is a model where a client sends requests and a server processes them and returns responses.
 
-The key idea is a clear separation of responsibilities: clients initiate communication; servers provide centralized, controlled access to resources.
+The client is typically responsible for the user interface or initiating actions, while the server handles business logic, data storage, and security.
+
+The interaction is request–response based:
+
+the client sends a request
+the server processes it
+the server returns a response
+
+An important detail is that “client” and “server” are logical roles. A backend service can act as a server for one request and as a client when calling another service.
+
+HTTP is the most common protocol used in this model. It defines how requests and responses are structured and exchanged over the network.
 
 ---
 
@@ -64,12 +102,20 @@ Compare **HTTP** and **HTTPS** at the **transport** level.
 ### 3. Production reality
 Use **HTTPS everywhere** for user-facing apps; add **HSTS**, modern TLS versions, and correct **certificate chain** validation. Misconfigured TLS (weak ciphers, expired certs) breaks availability, not only security.
 
-### 4. Summary (Short speaking answer)
-HTTP transfers messages in plain form on the wire, so eavesdroppers can read or alter traffic. HTTPS wraps HTTP in TLS, encrypting traffic and verifying the server’s identity with certificates.
+### 4. Middle+ answer (as on interview)
 
-Browsers show warnings or block mixed content when HTTPS expectations are violated. For APIs, HTTPS protects tokens and payloads in transit.
+The main difference between HTTP and HTTPS is security.
 
-The key idea is that HTTPS adds cryptography and trust establishment to HTTP; it is the default baseline for anything sensitive. For the same topic in a Spring Security context, see **question 63** in `Модуль 4 — Web (Spring MVC + Security).md`.
+HTTP sends data in plain text, meaning it can be intercepted or modified by anyone who has access to the network
+HTTPS is HTTP over TLS, which provides encryption, data integrity, and authentication
+
+With HTTPS:
+
+data is encrypted → cannot be easily read
+integrity is protected → tampering is detected
+the server is authenticated using certificates
+
+In practice, HTTPS is the standard for all modern applications, especially when handling sensitive data like authentication tokens or personal information.
 
 ---
 
@@ -93,12 +139,23 @@ What is **REST**, and which **architectural constraints** does it emphasize?
 ### 3. Interview nuance
 Many “REST” APIs are **RPC-over-HTTP** (action URLs, verbs in path). That can be fine operationally; interviewers often check whether you know **the difference** between **style** and **marketing**.
 
-### 4. Summary (Short speaking answer)
-REST is an architectural style for networked systems, not a single framework. It favors resource-oriented thinking, stateless request processing, a uniform interface using HTTP semantics, cache-friendly responses, and layered infrastructure.
+### 4. Middle+ answer (as on interview)
 
-Practical REST APIs usually use nouns for resources, HTTP methods for intent, and status codes for outcomes—though not every JSON API strictly follows HATEOAS or pure hypermedia.
+REST (Representational State Transfer) is an architectural style for designing network APIs, typically using HTTP.
 
-The key idea is predictable, scalable interaction over HTTP by constraining how clients and servers exchange representations of resources.
+It is based on working with resources, which are identified by URLs, and manipulated using standard HTTP methods like GET, POST, PUT, and DELETE.
+
+The main principles of REST are:
+
+Client–server — separation between client and server responsibilities
+Statelessness — each request contains all necessary information; the server does not store client state between requests
+Cacheability — responses can be cached to improve performance
+Uniform interface — consistent use of URLs, HTTP methods, and status codes
+Layered system — intermediaries like proxies or gateways can exist between client and server
+
+In practice, many APIs follow REST principles loosely and behave more like RPC over HTTP, which is acceptable as long as the design remains consistent.
+
+There is also an optional constraint called code-on-demand, where the server can send executable code to the client.
 
 ---
 
@@ -120,12 +177,19 @@ When do you use **PUT** versus **POST**?
 ### 3. When it breaks
 If the team uses **POST for everything** “because it is easier,” you lose **caching** and **intermediary** semantics. If you use **PUT** without stable URIs, you are really doing RPC.
 
-### 4. Summary (Short speaking answer)
-PUT targets a specific resource URI and is used to upload the full representation of that resource, with idempotent semantics in the HTTP model. POST submits an action or creates a subordinate resource when the server assigns the identity, and repeated calls may have different effects.
+### 4. Middle+ answer (as on interview)
 
-In real APIs, teams sometimes bend rules; what matters is documenting behavior and using idempotency where duplicates are costly.
+The main difference between PUT and POST is how they handle resource creation and idempotency.
 
-The key idea is **who owns the resource identity** (client-known URI → PUT; server-assigned → POST) and **idempotency expectations**.
+PUT is used to create or replace a resource at a known URI. The client specifies the resource identifier, and the operation is idempotent, meaning repeating the same request does not change the result
+POST is used to create a new resource or trigger processing. The server usually generates the resource identifier, and the operation is not idempotent, meaning repeated requests may create multiple resources
+
+Examples:
+
+PUT /users/42 → create or replace user with ID 42
+POST /users → create a new user, server assigns ID
+
+In practice, PUT is used when the client knows the resource identity, while POST is used when the server controls resource creation.
 
 ---
 
@@ -154,12 +218,22 @@ Which HTTP methods are **idempotent**, and what does that mean for **retries**?
 ### 3. Production nuance
 **Network retries** (gateway, client library) are safer for **idempotent** methods. For **POST**, use **idempotency-Key** headers or dedupe business logic. **PATCH** idempotency is **not** promised by the spec—document your resource-specific behavior.
 
-### 4. Summary (Short speaking answer)
-Idempotent HTTP methods can be repeated without changing the outcome beyond the first successful application. GET, HEAD, OPTIONS are safe and idempotent; PUT and DELETE are idempotent but not safe; POST is generally not idempotent; PATCH may or may not be, depending on how the server applies partial updates.
+### 4. Middle+ answer (as on interview)
 
-This matters for retries, proxies, and resilient clients—the infrastructure can resend idempotent requests more safely.
+Idempotent methods are HTTP methods where repeating the same request multiple times has the same effect as executing it once.
 
-The key idea is separating **read-only** operations from **state-changing** ones, and among mutating methods, knowing which repeats are **safe for automation**.
+The main idempotent methods are:
+
+GET, HEAD, OPTIONS — safe and idempotent
+PUT — idempotent, as it replaces a resource
+DELETE — idempotent, as deleting the same resource multiple times does not change the result
+
+Non-idempotent methods:
+
+POST — typically creates new resources, so repeated requests may produce duplicates
+PATCH — not guaranteed to be idempotent, depends on implementation
+
+In practice, idempotency is important for retries. Idempotent methods can be safely retried without causing unintended side effects, while non-idempotent methods require additional mechanisms like idempotency keys.
 
 ---
 
@@ -187,12 +261,24 @@ What do these **HTTP status codes** mean, and when do you return each?
 - **404 vs 403 for hidden resources:** returning **404** avoids **resource enumeration**; pick consistently with product/security policy.
 - **500 vs 4xx:** programmer bugs / downstream collapse → **5xx**; bad client input → **4xx**.
 
-### 3. Summary (Short speaking answer)
-200 means the request succeeded in a generic way. 201 means a new resource was created, commonly after POST. 400 means the client sent invalid or unprocessable input. 401 means authentication is required or failed. 403 means the user is authenticated but not authorized. 404 means the requested resource is not available at that URI. 500 means an unexpected error occurred on the server.
+### 3. Middle+ answer (as on interview)
 
-Using the right code helps clients, caches, and operators behave correctly and debug faster.
+These HTTP status codes indicate the result of a request and are divided into success, client errors, and server errors.
 
-The key idea is that status codes communicate **outcome class** and **who should fix the problem**—client, auth layer, or server.
+200 OK — the request succeeded, and the response contains the result
+201 Created — a new resource was successfully created, often with a Location header
+400 Bad Request — the request is invalid, for example due to malformed input or validation errors
+401 Unauthorized — the request is not authenticated (missing or invalid credentials)
+403 Forbidden — the user is authenticated but does not have permission
+404 Not Found — the requested resource does not exist
+500 Internal Server Error — an unexpected error occurred on the server
+
+In practice:
+
+4xx errors indicate problems with the client request
+5xx errors indicate problems on the server side
+
+Status codes are important because they guide client behavior, such as retries and error handling.
 
 ---
 
@@ -217,12 +303,29 @@ A **session** is **server-side conversational state**: the server remembers the 
 ### 3. Security
 Prefer **`HttpOnly`** session cookies to reduce **XSS** token theft; pair with **`Secure`** and sensible **`SameSite`**. For APIs, **Bearer tokens** in memory/header trade off different XSS/CSRF risks—know both models.
 
-### 4. Summary (Short speaking answer)
-Cookies are name-value pairs stored by the browser and attached to matching HTTP requests. Sessions are server-side state keyed by an identifier; the browser often carries that id as a session cookie.
+### 4. Middle+ answer (as on interview)
 
-Cookies can also be used for non-session things (preferences, tracking). Sessions expire or invalidate on logout or timeout.
+A cookie is a small piece of data stored in the client’s browser and sent with each request to the server.
 
-The key idea is **cookies are a transport/storage mechanism**; **sessions are server-side continuity** usually bound to the client via a cookie or token.
+A session is server-side data that stores user-specific information, such as authentication state or a shopping cart.
+
+They are typically used together:
+
+the server creates a session and stores data on the server
+the client receives a session ID in a cookie
+on each request, the browser sends the cookie back
+the server uses the session ID to retrieve the session data
+
+So:
+
+cookie = stored on the client
+session = stored on the server
+
+Sessions introduce server-side state, which can complicate horizontal scaling.
+
+In practice, cookies are just a transport mechanism, while sessions hold the actual state.
+
+In modern APIs, server-side sessions are often replaced with stateless authentication (e.g., JWT), but sessions are still used in some systems.
 
 ---
 
@@ -242,12 +345,26 @@ Browsers enforce the **Same-Origin Policy** for JavaScript-initiated requests: b
 ### 3. Why “needed”
 Without CORS, **legitimate** multi-domain frontends (SPA on CDN, API on another host) could not cooperate safely. CORS is **not** a substitute for **authentication**—it is a **browser** policy; **curl/Postman** ignore CORS.
 
-### 4. Summary (Short speaking answer)
-CORS is a browser mechanism that relaxes the same-origin policy when the target server explicitly allows another origin through response headers.
+### 4. Middle+ answer (as on interview)
 
-It is needed so modern web apps can call APIs on different origins while still preventing malicious sites from silently reading private responses from other domains the user is logged into.
+CORS (Cross-Origin Resource Sharing) is a browser mechanism that allows or restricts requests between different origins.
 
-The key idea is **CORS controls browser-readable cross-origin access**, not general API security. Spring-specific configuration overlaps with **question 58** in `Модуль 4 — Web (Spring MVC + Security).md`.
+By default, browsers enforce the Same-Origin Policy, which means a web page can only access resources from the same domain, protocol, and port.
+
+CORS allows a server to explicitly permit requests from other origins using HTTP headers like:
+
+Access-Control-Allow-Origin
+Access-Control-Allow-Methods
+Access-Control-Allow-Headers
+
+For more complex requests, the browser sends a preflight (OPTIONS) request to check if the server allows the operation.
+
+CORS is needed because modern applications often have a frontend and backend on different domains, and they must communicate securely.
+
+CORS does not prevent sending requests, it prevents a malicious website from reading responses from another origin in the browser.
+
+Important: CORS is enforced only by browsers and does not replace authentication or security on the server.
+CORS protects users by preventing malicious websites from reading sensitive data from other domains.
 
 ---
 
@@ -269,12 +386,29 @@ What is **SOAP**, and where is it still relevant?
 ### 3. Trade-offs
 **Pros:** strong typing, mature **interop** stacks, cross-language tooling. **Cons:** verbose XML, higher **latency** and **payload** size, steeper **DX** compared to JSON REST for many teams.
 
-### 4. Summary (Short speaking answer)
-SOAP is an XML-based messaging protocol with a formal contract, often described by WSDL, and a stack of standards for security and reliability.
+### 4. Middle+ answer (as on interview)
 
-It is still common where enterprises need strict contracts, auditability, or integration with legacy platforms, even though many greenfield public APIs prefer REST or gRPC.
+SOAP (Simple Object Access Protocol) is a protocol for exchanging structured messages using XML, typically over HTTP.
 
-The key idea is **SOAP optimizes for contract rigor and standards**; **REST/JSON** often optimizes for simplicity and web ergonomics.
+It uses a strict contract defined by WSDL, which describes available operations and data formats. This allows automatic code generation and strong typing.
+
+SOAP is mainly used in:
+
+enterprise systems
+banking and government integrations
+legacy systems that require strict contracts and standards
+
+Advantages:
+
+strong contracts and formal standards
+built-in support for security and reliability
+
+Disadvantages:
+
+verbose XML format
+higher complexity and slower development compared to REST
+
+In practice, SOAP is still used in regulated or legacy environments, while most modern systems prefer REST or gRPC.
 
 ---
 
@@ -301,11 +435,27 @@ Resource-oriented **HTTP + JSON**, **human-readable**, easy **browser** consumpt
 | **Browser** | Native `fetch` | needs **grpc-web** proxy |
 | **Debugging** | Easy with curl | Often grpcurl / tools |
 
-### 4. Summary (Short speaking answer)
-gRPC is a high-performance RPC framework built on HTTP/2 and protobuf, with first-class streaming and generated clients and servers.
+### 4. Middle+ answer (as on interview)
 
-REST usually means HTTP with JSON resources, which is simpler for public web APIs and human inspection, while gRPC fits internal microservice traffic where performance, typed contracts, and streaming matter.
+gRPC is a high-performance RPC framework that uses HTTP/2 and Protocol Buffers (protobuf) for communication.
 
-The key idea is **gRPC is contract-first binary RPC**; **REST is resource-oriented HTTP**—choose based on clients, observability, and ecosystem, not hype.
+It defines APIs using .proto files and generates strongly typed client and server code.
+
+REST, on the other hand, is an architectural style that typically uses HTTP + JSON and works with resources.
+
+Key differences:
+
+Data format — REST uses text-based JSON, while gRPC uses compact binary protobuf
+Performance — gRPC is faster and more efficient due to binary format and HTTP/2
+Streaming — gRPC supports streaming natively; REST requires additional mechanisms
+Contract — gRPC uses strict schema (.proto), while REST is more flexible
+Browser support — REST works directly in browsers; gRPC requires additional tools (e.g., grpc-web)
+
+When to use:
+
+use gRPC for internal microservice communication where performance and strict contracts matter
+use REST for public APIs and browser clients where simplicity and compatibility are important
+
+gRPC is a contract-first RPC framework where APIs are defined using protobuf. It provides strong typing, efficient binary communication, and supports streaming, making it suitable for internal microservices.
 
 ---
