@@ -264,11 +264,18 @@ A **partition** is an **ordered, immutable sequence** of records assigned a mono
 
 A partition is an ordered, append-only log of records within a Kafka topic. Each record in a partition has a unique, monotonically increasing offset.
 
-Partitions are the key mechanism that allows Kafka to achieve scalability and parallelism. A topic is split into multiple partitions, which can be distributed across different brokers and processed independently.
+Partitions are the key mechanism that allows Kafka to achieve scalability and parallelism. A topic is split into multiple partitions, which are distributed across different brokers (nodes) in the cluster and processed independently.
+
+Each partition is replicated across multiple brokers based on the replication factor. These replicas are stored on different Kafka instances to provide fault tolerance.
+
+For every partition, Kafka elects a leader replica, while the remaining replicas act as followers.
+
+The leader handles all read and write requests from producers and consumers.
+Followers continuously replicate data from the leader to stay in sync.
+
+In case the leader broker fails, Kafka automatically promotes one of the in-sync follower replicas to become the new leader, ensuring high availability.
 
 Ordering is guaranteed only within a partition, not across the entire topic. To maintain order for related data, producers typically use a key, so all related messages are routed to the same partition.
-
-Each partition is also replicated across brokers, with one broker acting as the leader and others as followers, ensuring fault tolerance.
 
 In practice, partitions define both the maximum parallelism (one consumer per partition in a group) and the ordering guarantees of the system.
 
@@ -322,16 +329,13 @@ What **delivery semantics** exist in Kafka?
 
 Kafka supports three main delivery semantics:
 
-At-most-once — messages are committed before processing, so they are never redelivered, but can be lost if a failure occurs
-At-least-once — messages are processed first and offsets are committed afterward; this guarantees no data loss, but can result in duplicates
-Exactly-once — Kafka provides transactional support and idempotent producers to ensure that messages are processed exactly once within Kafka’s boundaries
+At-most-once — messages are committed before processing, so they are never redelivered, but can be lost if a failure occurs. In practice, this is achieved by configuring the producer to not wait for broker acknowledgments (acks=0) and disabling retries, while the consumer uses automatic offset commits. This setup minimizes latency but sacrifices reliability, since any failure during processing can result in permanent data loss. It is typically used in scenarios like metrics, logging, or telemetry, where occasional data loss is acceptable.
 
-In practice, at-least-once is the most commonly used model. It requires consumers to be idempotent to safely handle duplicate messages.
+At-least-once — messages are processed first and offsets are committed afterward; this guarantees no data loss, but can result in duplicates. In practice, producers are configured with acks=all and retries enabled, often combined with idempotence, while consumers disable auto-commit and explicitly commit offsets only after successful processing. This ensures that messages are not lost, but if a consumer fails after processing and before committing the offset, the same message may be processed again. This is the most commonly used model in real systems such as order processing, payments, and other business-critical workflows, where duplicates must be handled through idempotent logic.
 
-Exactly-once semantics in Kafka rely on idempotent producers and transactions, but they only guarantee correctness within Kafka. End-to-end exactly-once processing across external systems still requires additional patterns like idempotency or the outbox pattern.
+Exactly-once — Kafka provides transactional support and idempotent producers to ensure that messages are processed exactly once within Kafka’s boundaries. This is achieved by enabling idempotent producers and using transactions with a transactional.id, allowing the application to atomically write results and commit offsets together. However, this guarantee only holds within Kafka itself. When external systems such as databases are involved, additional mechanisms like idempotency or the outbox pattern are still required. Exactly-once is typically used in Kafka-to-Kafka pipelines, such as stream processing with Kafka Streams or ETL workflows.
 
-The key idea is that delivery semantics depend on when offsets are committed relative to processing.
-In real systems, exactly-once is hard to achieve across multiple services, so most systems rely on at-least-once with idempotent processing.
+The key idea is that delivery semantics depend on when offsets are committed relative to processing. In real systems, achieving true end-to-end exactly-once semantics across multiple services is extremely difficult, so most production systems rely on at-least-once delivery combined with idempotent processing.
 
 ---
 
