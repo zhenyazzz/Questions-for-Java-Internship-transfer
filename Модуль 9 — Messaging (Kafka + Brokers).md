@@ -50,6 +50,23 @@
 
 ---
 
+## Appendix — English translation of key Kafka terms
+
+| **Term**           | **Definition**                                                                                                                                                        | **Why**                                                         | **Risk**                                                        |
+|--------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------|-----------------------------------------------------------------|
+| **Producer**       | A client that writes records to Kafka topics, optionally choosing partitioning strategy (key-based or round-robin) and delivery guarantees.                            | Controls ordering, throughput, and durability                   | Wrong acks / retries → data loss or duplicates                 |
+| **Consumer**       | A client that reads records from Kafka partitions and manages offsets to track processing progress.                                                                    | Defines delivery semantics (at-most / at-least / exactly-once)  | Неправильная работа с offset → дубликаты или потеря            |
+| **Topic**          | A logical append-only log that groups records of the same type.                                                                                                       | Изоляция потоков данных                                         | Плохая структура топиков → хаос и сложность масштабирования    |
+| **Message / Event**| An immutable record containing key, value, headers, and timestamp representing a fact that already happened.                                                           | Event-driven архитектура                                        | Изменение событий → ломает консистентность                     |
+| **Broker**         | A Kafka server responsible for storing partitions, handling reads/writes, and replicating data.                                                                        | Unit of storage and compute                                     | Перегрузка брокера → деградация всего кластера                 |
+| **Cluster**        | A set of brokers working together, distributing partitions, and providing fault tolerance.                                                                             | Масштабирование и отказоустойчивость                            | Плохой баланс → hotspot                                        |
+| **Partition**      | An ordered, append-only log within a topic; the unit of parallelism and scaling.                                                                                      | Масштабирование и порядок внутри partition                      | Неправильный key → перекос нагрузки                            |
+| **Offset**         | A monotonically increasing identifier of a record within a partition, used by consumers to track position.                                                             | Контроль обработки                                              | Commit до обработки → потеря данных                            |
+| **Consumer Group** | A set of consumers sharing work by dividing partitions; each partition is processed by only one consumer in a group.                                                   | Горизонтальное масштабирование                                  | Больше consumers, чем partitions → простаивают                 |
+| **Replication**    | Copying partition data across brokers with a leader–follower model for durability.                                                                                    | Отказоустойчивость                                              | Replication lag → stale reads / failover проблемы              |
+| **ZooKeeper**      | Apache ZooKeeper — used to manage cluster metadata, leader election, and coordination.                                                                                |                                                                | Отдельная зависимость → сложность эксплуатации                 |
+| **KRaft**          | Kafka’s built-in consensus and metadata management system replacing ZooKeeper.                                                                                        | Упрощение архитектуры                                           | Новая система → меньше battle-tested (исторически)             |
+
 <a id="q131"></a>
 
 ## 131. What is a message broker?
