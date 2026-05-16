@@ -141,6 +141,9 @@ A distributed container platform needs separate responsibilities:
 Splitting responsibilities makes Kubernetes extensible and fault-tolerant.
 
 ## How it works internally
+
+![Альтернативный текст](https://images.openai.com/static-rsc-4/7JgYDJi9Ypn3oxa27vCSF7wBhedaSV42-XNM641YmCRyX1E9tmAaStHmwINiZ7Ubw1yTtCvjQyUqEjh-0P69oSvYyo8IAiVmA-M5MoBDuOpxtbsYFnneqEwUEUqV8I3Ftn_4IdVXK5fU3T6_DhmlmDzpKvdOZfbvdIOM1JP9gZ6dkOqkmATv4MKWYuMA5YXt?purpose=fullsize)
+
 The most important components are:
 
 ### API Server
