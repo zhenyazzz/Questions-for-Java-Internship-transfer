@@ -1,1200 +1,254 @@
-# NoSQL Databases — Production Interview Preparation
+# NoSQL Databases — Senior Engineering Notes for Java Backend Interviews
 
 ## Table of Contents
 
-- [NoSQL Fundamentals](#nosql-fundamentals)
-- [Types of NoSQL Databases](#types-of-nosql-databases)
-- [MongoDB Internals and Modeling](#mongodb-internals-and-modeling)
-- [MongoDB Indexing](#mongodb-indexing)
-- [Replication](#replication)
-- [Sharding](#sharding)
-- [Transactions and Consistency](#transactions-and-consistency)
-- [Redis](#redis)
-- [Cassandra](#cassandra)
-- [Binary Data Storage](#binary-data-storage)
-- [NoSQL in Microservices](#nosql-in-microservices)
-- [Monitoring and Production Issues](#monitoring-and-production-issues)
-- [CAP and PACELC](#cap-and-pacelc)
-- [Interview Q&A](#interview-qa)
+[NoSQL Under Production Pressure](#nosql-under-production-pressure) · [Distributed Data Mechanics](#distributed-data-mechanics) · [NoSQL Database Types as Runtime Shapes](#nosql-database-types-as-runtime-shapes) · [MongoDB Internal Model](#mongodb-internal-model) · [MongoDB Data Modeling Under Load](#mongodb-data-modeling-under-load) · [MongoDB Indexing Mechanics](#mongodb-indexing-mechanics) · [MongoDB Replication and Elections](#mongodb-replication-and-elections) · [MongoDB Sharding and Distributed Queries](#mongodb-sharding-and-distributed-queries) · [Transactions, Retries, and Idempotency](#transactions-retries-and-idempotency) · [Redis Internals and Cache Behavior](#redis-internals-and-cache-behavior) · [Cassandra Architecture](#cassandra-architecture) · [Binary Data Storage](#binary-data-storage) · [NoSQL in Spring Boot Microservices](#nosql-in-spring-boot-microservices) · [Operational Failure Modes](#operational-failure-modes) · [CAP and PACELC in Real Systems](#cap-and-pacelc-in-real-systems) · [Interview Q&A](#interview-qa)
 
 ---
 
-# NoSQL Fundamentals
+# NoSQL Under Production Pressure
 
-NoSQL is a storage decision, not a performance label. A team chooses it when the required data model, write/read scale, latency, or availability model does not fit a single relational database cleanly.
+NoSQL appears when the relational database is no longer only a persistence layer but the central bottleneck in the request path. The usual symptom is not that SQL “cannot scale”; it is that one database is expected to provide normalized storage, arbitrary joins, strict constraints, multi-row transactions, reporting queries, high-volume writes, low-latency reads, and cross-service integration at the same time. Under real traffic those requirements fight each other. Indexes needed for reads slow writes. Joins that are elegant in schema design become expensive in p99 latency. Long transactions hold resources while API threads wait. Shared schemas slow independent service deployment.
 
-## Why relational databases become problematic at scale
+A senior engineer does not choose NoSQL because it is modern. The decision is normally forced by an access pattern. A product page wants one document-like aggregate. A session lookup wants one memory key. A metrics pipeline wants append-heavy writes partitioned by device and time. A graph traversal wants edge-local navigation. Once the access pattern is clear, the database choice becomes less ideological and more mechanical: which storage engine and distribution model produce the fewest failure modes for this traffic?
 
-Relational databases are strong when data is normalized, joins are valuable, constraints are strict, and transactions are central. Problems usually appear in production for one of these reasons:
+Vertical scaling keeps the system understandable. One larger PostgreSQL or MongoDB replica set is easier to reason about than a distributed cluster. The tradeoff is ceiling and blast radius. Horizontal scaling adds capacity by adding nodes, but every node boundary introduces routing, replication delay, metadata movement, partial failure, and retry ambiguity. After data is partitioned, a query either targets the right partition or fans out. After data is replicated, a read either sees the leader or risks staleness. After writes cross partitions, the system pays coordination cost.
 
-| Pressure | What happens |
-|---|---|
-| Write throughput exceeds one primary node | Vertical scaling delays the problem but does not remove the single-writer bottleneck. |
-| Queries need many joins on hot paths | CPU, memory, locks, and query planning become latency risks. |
-| Data shape changes frequently | Schema migrations become deployment coordination work. |
-| Tables grow beyond memory-friendly indexes | Queries degrade into disk-heavy operations. |
-| Multi-region availability is required | Cross-region strong consistency adds latency or reduces availability. |
-| One schema is shared by many services | Teams become coupled through database structure and migration order. |
-
-SQL can scale far. The issue is not that SQL is weak; the issue is that some workloads need a different contract: denormalized reads, partition-first writes, cache-like latency, or availability under partial failure.
-
-## Horizontal vs vertical scaling
-
-**Vertical scaling** adds CPU, memory, disk, and I/O to one machine. It keeps operations simple because data remains local, transactions remain easier, and queries do not require distributed routing. The limit is cost, hardware ceiling, and failure blast radius.
-
-**Horizontal scaling** adds machines and distributes data. It increases capacity but introduces routing, replication lag, rebalance operations, node failure handling, cross-node consistency, and operational complexity. A horizontally scaled database is not just a bigger database; it is a distributed system.
-
-Production decision:
-
-- Use vertical scaling while the workload fits and operational simplicity matters.
-- Move to horizontal scaling when data size, write throughput, availability, or isolation requirements justify distributed failure modes.
-
-## Distributed systems basics
-
-Distributed databases split responsibility across nodes. Every request now depends on several unstable conditions:
-
-- Which node owns the data.
-- Which replicas are current.
-- Whether a leader exists.
-- Whether a quorum can be reached.
-- Whether routing metadata is fresh.
-- Whether client retries are safe.
-
-Common failure modes:
-
-- Node crash.
-- Network partition.
-- Slow disk causing replication lag.
-- Leader election during writes.
-- Client timeout while the database later commits the operation.
-- Duplicate retry after partial success.
-- Stale reads from replicas.
-
-Backend services must assume ambiguous outcomes. A timeout does not prove the write failed. A retry can duplicate a side effect unless the operation is idempotent.
-
-## CAP theorem intuition
-
-CAP matters during a network partition. If two groups of nodes cannot communicate, the system must choose between:
-
-- **Consistency**: do not allow operations that could create conflicting state.
-- **Availability**: keep answering reachable clients even if responses may be stale or divergent.
-
-Partition tolerance is mandatory once data spans machines. Networks fail, packets drop, DNS breaks, nodes pause, and cross-zone links degrade.
-
-Operational examples:
-
-- A primary database that cannot reach majority stops accepting writes to avoid split brain.
-- An AP-style store accepts writes on reachable replicas and resolves conflicts later.
-- A cache keeps serving stale data because returning something is better than failing the page.
-
-## Eventual consistency
-
-Eventual consistency means replicas or derived systems converge after propagation completes. It is not an excuse for undefined correctness. Engineers must define:
-
-- Source of truth.
-- Maximum acceptable staleness.
-- Conflict handling.
-- Retry behavior.
-- Idempotency keys or version checks.
-- Reconciliation jobs.
-
-Typical flow in a Spring Boot system:
-
-1. Catalog service updates MongoDB.
-2. Outbox event is published to Kafka.
-3. Search service updates Elasticsearch/OpenSearch.
-4. Redis cache is invalidated or expires.
-5. Order service updates a product snapshot.
-
-For seconds or minutes, different systems can show different values. That is acceptable for product descriptions, risky for inventory, and usually unacceptable for money movement without compensating controls.
-
-## Replication
-
-Replication keeps copies of data on multiple nodes. It solves node failure and improves durability. It can also serve reads, but read scaling through replicas introduces staleness unless reads are coordinated.
-
-Replication does not solve:
-
-- Bad queries.
-- Hot partitions.
-- Missing indexes.
-- Logical corruption.
-- Application bugs.
-- Backup requirements.
-
-If an application deletes the wrong data, replication quickly copies the deletion. Backups and restore drills remain mandatory.
-
-## Partitioning
-
-Partitioning splits data by key, range, hash, tenant, time bucket, or shard key. It solves capacity and throughput limits by making different nodes responsible for different data.
-
-Partitioning creates new constraints:
-
-- Queries must include the partition key to avoid scatter-gather.
-- Hot keys overload one partition.
-- Rebalancing consumes network and disk I/O.
-- Cross-partition transactions are expensive.
-- Unique constraints are harder unless scoped by partition key.
-
-A partition key is an operational decision. It determines where write load lands, how reads are routed, and how painful future growth becomes.
-
-## Why distributed consistency is hard
-
-Consistency is hard because nodes observe events in different orders and communication is unreliable. A service may see:
-
-- Write acknowledged by one replica but not yet replicated.
-- Primary fail after local commit but before majority replication.
-- Retry arriving after a new leader is elected.
-- Consumer processing Kafka events out of order.
-- Cache invalidation reaching Redis before database transaction commits.
-
-The practical answer is not “make everything strongly consistent.” Strong coordination increases latency, reduces availability during failures, and limits throughput. Engineers choose consistency per workflow.
+The important mental shift is that NoSQL systems often move correctness from the database into the application and operational model. A relational schema can reject invalid foreign keys. A document database may accept a malformed document unless validation exists. A single SQL transaction can maintain an invariant across tables. A NoSQL service may need conditional updates, idempotency keys, event ordering, and reconciliation. The work does not disappear; it moves to code, topology, and runbooks.
 
 ---
 
-# Types of NoSQL Databases
+# Distributed Data Mechanics
 
-Different NoSQL systems optimize different access patterns. Choosing the wrong type usually creates architectural debt because the application starts compensating for missing database primitives.
+A distributed database request has two paths: the logical path the developer imagines and the physical path the system actually executes. The logical path is “save order” or “find products by category.” The physical path includes driver connection selection, topology discovery, routing metadata, leader or shard targeting, storage-engine lookup, replication acknowledgement, journaling, and result materialization. Latency grows when any step stops being local, indexed, or bounded.
 
-## Document databases
+Replication copies data for durability and failover. It does not reduce the amount of data each replica stores, and it does not repair bad query design. Replication introduces a timeline problem: the primary may have accepted a write while a secondary has not applied it yet. If the application reads from that secondary, it may observe old state. If a failover happens before a weakly acknowledged write reaches a majority, the write can be rolled back. Stronger acknowledgement reduces that risk by waiting for more replicas, but the request pays latency and may become unavailable when a quorum is unreachable.
 
-Document databases store nested records, usually JSON-like. MongoDB stores BSON documents in collections.
+Partitioning divides ownership. A partition key, shard key, or token determines where data lives. If the request includes that key, the database can route directly. If not, the system broadcasts, waits for many nodes, merges results, and turns one query into a distributed operation. This is why a shard key is not just a field; it is a contract between application access patterns and physical placement. A bad key becomes visible as hot shards, scatter-gather queries, uneven disk growth, and painful resharding.
 
-Production fit:
+Consistency becomes difficult because nodes do not share an instant global clock or instant communication. One service times out while the database later commits. Kafka delivers an event twice. A Redis invalidation arrives before the MongoDB write is visible to another reader. A secondary returns a value from before the user clicked Save. The system is not broken; the architecture allowed multiple observers to see different stages of propagation. Production correctness depends on deciding where that is acceptable and where the service must force coordination.
 
-- Product catalogs with variable attributes.
-- CMS/content documents.
-- User profiles and preferences.
-- Read models built from events.
-- Aggregates usually read and updated together.
-
-Failure pattern:
-
-- Treating documents like normalized tables creates many application joins.
-- Embedding unbounded arrays creates large documents and write contention.
-- Flexible schema without validation creates incompatible document shapes.
-
-## Key-value databases
-
-Key-value stores retrieve values by key. Redis is the common backend example, with richer data structures than a simple map.
-
-Production fit:
-
-- Cache-aside reads.
-- Sessions and tokens with TTL.
-- Rate limits and counters.
-- Feature flags or short-lived coordination.
-- Leaderboard-like sorted sets.
-
-Failure pattern:
-
-- Expecting complex secondary queries.
-- Treating cache as durable source of truth.
-- Hot keys, big keys, memory eviction, and cache stampedes.
-
-## Column-family databases
-
-Wide-column systems such as Cassandra store rows by partition key, with clustering columns and flexible columns. They are designed around known queries and high write throughput.
-
-Production fit:
-
-- Time-series events.
-- IoT/device metrics.
-- Clickstream ingestion.
-- Audit logs at massive volume.
-- Multi-node availability with tunable consistency.
-
-Failure pattern:
-
-- Querying by fields not in the data model.
-- Creating huge partitions.
-- TTL/delete tombstone pressure.
-- Assuming Cassandra behaves like SQL with a different query language.
-
-## Graph databases
-
-Graph databases store nodes and edges and optimize relationship traversal.
-
-Production fit:
-
-- Fraud rings.
-- Social graph traversal.
-- Dependency graphs.
-- Recommendation paths.
-- Authorization relationships with deep hierarchy.
-
-Failure pattern:
-
-- Using a graph database only because entities are related. Most business relationships do not require graph traversal.
-- Replacing simple joins with graph infrastructure unnecessarily.
-
-## Choosing the wrong database type
-
-A wrong database choice forces expensive compensations:
-
-| Wrong fit | Result |
-|---|---|
-| Redis for query-heavy data | Manual secondary indexes in application code. |
-| MongoDB for deep graph traversal | Expensive `$lookup`, recursive logic, or duplicated graph state. |
-| Cassandra for ad-hoc filtering | One table per query, duplicated data, or unacceptable scans. |
-| SQL for highly variable product attributes | Complex EAV tables, sparse columns, or JSON fields with weak indexing. |
-| MongoDB for strict financial ledger | Application must rebuild constraints SQL gives natively. |
-
-The database should match the highest-risk access pattern, not the most familiar API.
+Eventual consistency is only safe when convergence is engineered. A Spring Boot catalog service updating MongoDB and emitting Kafka events must define the source of truth, event version, consumer idempotency, retry policy, cache invalidation behavior, and reconciliation path. Otherwise “eventual” becomes “maybe someday unless a consumer failed.” Experienced teams add version numbers to documents, use outbox tables or collections, make consumers ignore stale events, and periodically rebuild read models from the source of truth.
 
 ---
 
-# MongoDB Internals and Modeling
+# NoSQL Database Types as Runtime Shapes
 
-MongoDB works well when documents represent application aggregates: data that is commonly read together, updated together, and owned by one service boundary.
+Document databases optimize for aggregate reads and localized updates. MongoDB works best when a request can load a document or a small indexed set of documents that already look close to the API response. The storage model tolerates heterogeneous fields, nested objects, and arrays, but under load the important question is whether the document stays bounded and whether its indexes match the request path.
 
-## BSON documents
+Key-value systems optimize for direct access. Redis is effectively a remote memory data-structure server. It is excellent when the key is known: session token, product cache entry, rate-limit counter, lock key, idempotency marker. It becomes awkward when the application wants secondary filtering because the database will not discover relationships for you. Teams that force query workloads into Redis usually start building manual indexes in application code, which becomes fragile quickly.
 
-MongoDB stores BSON, a binary representation of JSON-like documents. BSON supports nested fields, arrays, dates, decimals, ObjectIds, binary data, and typed values.
+Wide-column systems optimize for partition-local writes and reads. Cassandra is built for large distributed write volume where the query is known before the table is designed. It is not a general query engine. If a Spring Boot service writes device metrics by `device_id` and day bucket, Cassandra can spread load and retrieve bounded time ranges efficiently. If product management later asks for arbitrary filtering by firmware version, region, and status, the model may require new tables, duplicated writes, or a different analytical system.
 
-Production implication:
+Graph databases optimize relationship traversal. They are justified when the core operation is moving through edges, not simply storing entities that happen to be related. Fraud rings, authorization hierarchies, social connections, and dependency graphs can become unnatural in document or relational models once queries require multiple hops with changing depth.
 
-- Documents map naturally to Java DTOs and API payloads.
-- Nested structure reduces join needs.
-- Large nested documents increase network, memory, and update cost.
-- Type drift breaks deserialization and query behavior.
-
-## Collections
-
-A collection groups documents. It is less rigid than a SQL table, but production systems still need schema discipline through:
-
-- Spring validation.
-- DTO compatibility rules.
-- MongoDB JSON schema validation when useful.
-- Versioned documents.
-- Migration/backfill jobs.
-
-Putting unrelated document types into one collection usually makes indexing, validation, and ownership worse.
-
-## ObjectId
-
-`ObjectId` is a common `_id` type generated without central coordination. It includes a timestamp component and avoids a database round trip for ID generation.
-
-Use business IDs when external systems require stable domain identifiers, but keep uniqueness and immutability explicit. Do not expose internal IDs if they create security or coupling issues.
-
-## Embedding vs referencing
-
-Embedding stores child data inside the parent document. Referencing stores another document's ID.
-
-Use embedding when:
-
-- Child data is always read with the parent.
-- Child lifecycle belongs to the parent.
-- Child count is bounded.
-- Single-document atomicity is useful.
-
-Use references when:
-
-- Child data grows without bound.
-- Child is shared by many parents.
-- Child changes independently at high frequency.
-- Child needs independent query patterns.
-
-Example:
-
-- Embed order lines in an order.
-- Reference customer ID from an order.
-- Store product price snapshot in an order because historical checkout state must not change when catalog price changes.
-
-## Access-pattern-first design
-
-MongoDB modeling starts from endpoint behavior:
-
-- Which fields filter the query?
-- Which sort order is required?
-- Which fields are returned?
-- Which data is updated atomically?
-- How large can arrays grow?
-- Which fields change frequently?
-- Which access path dominates traffic?
-
-A model that looks clean but requires five queries per request is usually worse than a denormalized document with controlled duplication.
-
-## Denormalization
-
-Denormalization stores duplicated data to make reads cheaper and more predictable.
-
-Production usage:
-
-- Product summary duplicated into search read model.
-- User display name copied into comments.
-- Price snapshot copied into order line.
-- Category breadcrumb embedded in product document.
-
-Denormalization needs an update strategy:
-
-- Synchronous update when strong consistency is required and scope is small.
-- Kafka event propagation when eventual consistency is acceptable.
-- Periodic reconciliation to repair missed updates.
-- Version fields to ignore stale events.
-
-## Aggregation pipeline
-
-The aggregation pipeline transforms documents through stages like `$match`, `$project`, `$group`, `$sort`, `$lookup`, and `$unwind`.
-
-Production use:
-
-- Build reports for bounded datasets.
-- Project API-specific shapes.
-- Group data for admin dashboards.
-- Run offline or asynchronous transformations.
-
-Hot-path risks:
-
-- `$lookup` can behave like a join and become expensive.
-- `$group` and `$sort` can spill to disk.
-- Pipeline stages before selective `$match` waste resources.
-- Aggregations over large collections need careful indexes and limits.
-
-## Why JOINs are avoided
-
-MongoDB supports `$lookup`, but join-heavy OLTP removes the main benefit of document storage. Joins increase CPU, memory, network, and query planner complexity. In high-throughput services, engineers usually optimize for single-document or targeted multi-document reads.
-
-Use joins when they are bounded, indexed, measured, and not on the hottest path. Avoid using MongoDB as if it were a relational database with weaker constraints.
-
-## Document growth problems
-
-Documents have a maximum size and practical performance limits before that. Large documents cause:
-
-- Higher network transfer.
-- More memory pressure.
-- Slower serialization/deserialization.
-- More expensive updates.
-- Larger indexes if arrays are indexed.
-
-Unbounded arrays are the common cause. Store comments, events, notifications, and audit entries in separate collections with pagination.
-
-## Hot document problems
-
-A hot document is updated by many concurrent requests. Examples:
-
-- One counter document for all requests.
-- One inventory document with heavy decrement traffic.
-- One daily statistics document receiving every event.
-
-Solutions:
-
-- Bucket counters by time or hash.
-- Use Redis atomic counters for temporary aggregation, then flush.
-- Model events append-only and aggregate asynchronously.
-- Use optimistic locking/version checks when conflicts matter.
-
-## Schema evolution
-
-MongoDB allows mixed document shapes; Java services still need compatibility.
-
-Production approach:
-
-1. Add new optional field with default behavior.
-2. Deploy code that reads old and new shapes.
-3. Start writing new shape.
-4. Backfill old documents if needed.
-5. Remove old read path only after data is migrated.
-
-Use `schemaVersion` when transformations are non-trivial. Avoid big-bang migrations on high-traffic collections.
-
-## Single-document atomicity
-
-MongoDB updates to one document are atomic. This is one reason embedding is valuable. If an order and its items live in one document, status and line updates can be kept consistent without a multi-document transaction.
-
-If an invariant spans multiple documents or services, single-document atomicity no longer helps. Use a transaction inside one MongoDB deployment only when necessary; use events and sagas across services.
+Wrong database selection creates architectural scar tissue. MongoDB used for a ledger forces the application to rebuild constraints and audit guarantees that SQL provides naturally. Cassandra used for ad-hoc search pushes query complexity into duplicate tables. Redis used as durable primary state creates recovery and eviction risks. SQL used for highly variable catalog attributes can become a maze of sparse columns, EAV tables, or JSON blobs without the operational benefits of a document store.
 
 ---
 
-# MongoDB Indexing
+# MongoDB Internal Model
 
-Indexes are part of application design. A MongoDB collection without query-matching indexes becomes unstable as data grows.
+MongoDB stores BSON documents in collections. BSON matters because values are typed and binary encoded, not plain text JSON. Java services usually map documents through Spring Data or the MongoDB driver into domain objects, and that mapping becomes part of the schema contract. A field changing from number to string is not “flexible”; it is a production deserialization and query bug waiting for a release.
 
-## B-Tree indexes
+A collection is physically and operationally closer to a set of indexed documents than to a relational table. It can contain different shapes, but production systems should keep shapes compatible enough for the same indexes, validation rules, and ownership model. Mixing unrelated document types in one collection makes query plans less predictable and complicates lifecycle management.
 
-MongoDB indexes are B-tree-like ordered structures. They allow efficient equality lookup, range scans, and sorted reads. The database pays for that speed on writes because each insert/update/delete must maintain affected indexes.
+`ObjectId` allows distributed ID generation without a central sequence. That is useful for insert throughput and offline generation. It also contains timestamp information, which can be operationally convenient, but teams should not overfit business ordering or security behavior to it. Public business identifiers often deserve separate fields with explicit uniqueness and access rules.
 
-Production impact:
+MongoDB reads typically flow through the driver to a selected server, then through query planning, index traversal if available, document fetch from WiredTiger cache or disk, projection, and result serialization. A fast query is usually one where the index narrows the candidate set early, the working set is memory-resident, the projection is small, and the result size is bounded. A slow query often reads far more documents than it returns, sorts without index support, materializes large documents, or executes aggregation stages that spill.
 
-- Good indexes reduce p95/p99 latency.
-- Large indexes compete for memory.
-- Excess indexes reduce write throughput.
-- Index builds and changes are operational events.
+MongoDB writes reach the primary in a replica set. The storage engine updates data and indexes, durability depends on journaling and write concern, and replication records are consumed by secondaries through the oplog. The write cost is not just the document mutation. Every affected index must be updated, and in a sharded cluster the routing and shard-key placement also matter. A collection with ten indexes can have very different write behavior from the same collection with two indexes.
 
-## Compound indexes
-
-Compound indexes support queries involving multiple fields. Field order matters.
-
-Typical pattern:
-
-```javascript
-db.orders.createIndex({ tenantId: 1, status: 1, createdAt: -1, _id: -1 })
-```
-
-For query:
-
-```javascript
-{ tenantId: "t1", status: "PAID", createdAt: { $lt: cursor } }
-```
-
-with sort:
-
-```javascript
-{ createdAt: -1, _id: -1 }
-```
-
-Equality fields usually come before range/sort fields. Design from the real query, not from entity fields.
-
-## Multikey indexes
-
-A multikey index indexes array elements. It is useful for searching documents by tags or embedded values.
-
-Risk:
-
-- Large arrays create many index entries per document.
-- Compound multikey indexes have restrictions and can grow quickly.
-- Array indexing can hide document growth problems until write latency spikes.
-
-## TTL indexes
-
-TTL indexes delete documents after time based on a date field.
-
-Use cases:
-
-- Sessions.
-- Password reset tokens.
-- Verification codes.
-- Temporary imports.
-- Short-lived audit buffers.
-
-TTL deletion is background cleanup, not a precise scheduler. Do not use it for exact business deadlines.
-
-## Partial indexes
-
-Partial indexes include only documents matching a filter.
-
-Example:
-
-```javascript
-db.users.createIndex(
-  { email: 1 },
-  { unique: true, partialFilterExpression: { deleted: false } }
-)
-```
-
-This can enforce uniqueness only for active users and reduce index size.
-
-## Covered queries
-
-A covered query is answered from the index without fetching documents. It requires all filtered and returned fields to be in the index.
-
-Use it for high-traffic list endpoints returning small projections. Do not over-index large fields just to force coverage.
-
-## Explain plans
-
-`explain()` shows whether the query uses an index, how many keys/documents are examined, whether sorting is in memory, and where time is spent.
-
-Operational review should check:
-
-- `COLLSCAN` vs index scan.
-- Documents examined vs documents returned.
-- Sort stage behavior.
-- Index bounds.
-- Whether the winning plan matches the expected access pattern.
-
-## Index cardinality
-
-High-cardinality fields filter well: `userId`, `tenantId`, `email`, `orderId`. Low-cardinality fields like `status` or `enabled` alone often filter poorly.
-
-Low-cardinality fields can still be useful inside compound indexes when combined with tenant, date, or other selective fields.
-
-## Full collection scans
-
-A full collection scan reads every document to answer a query. It may work in development and fail in production.
-
-Common causes:
-
-- Missing index.
-- Query field order not matching compound index use.
-- Regex without anchored prefix.
-- Sorting without supporting index.
-- Type mismatch between stored value and query value.
-- Query on field with low selectivity.
-
-## Production indexing strategy
-
-Index per endpoint, not per field:
-
-1. Capture query filter, sort, projection, cardinality, and expected result size.
-2. Create the minimum compound index that supports it.
-3. Validate with production-like data and `explain()`.
-4. Monitor index usage and write latency.
-5. Remove unused indexes carefully.
-6. Revisit indexes when product filters change.
-
-Indexes are part of release design. A new API filter without an index is a production risk.
+WiredTiger uses an internal cache and concurrency control to keep hot data and indexes available. The phrase “working set” is practical: if the hot documents and indexes fit in memory, latency is stable; if they do not, the system increasingly waits on disk. Many MongoDB incidents are working-set incidents disguised as query incidents. The query was always inefficient, but it only became visible when memory stopped hiding it.
 
 ---
 
-# Replication
+# MongoDB Data Modeling Under Load
 
-Replication keeps multiple copies of data so the system can survive node failures and sometimes serve read traffic from replicas.
+MongoDB modeling starts with request shape, not entity shape. For a `GET /products/{id}` endpoint, storing title, attributes, category breadcrumb, image metadata, and a price snapshot in one product document can remove multiple joins and produce stable latency. For `GET /users/{id}/notifications`, embedding every notification in the user document will eventually create a large hot document. The difference is boundedness and write pattern, not whether the data is conceptually related.
 
-## Replica sets
+Embedding is a locality optimization. It keeps data that is read together and updated together inside one atomic boundary. Referencing is a growth and independence optimization. It keeps large, shared, or independently changing data outside the parent. A senior MongoDB answer usually sounds like: embed the bounded owned part, reference the unbounded or shared part, and duplicate small immutable snapshots when the historical state matters.
 
-A MongoDB replica set usually contains one primary and multiple secondaries. Writes go to the primary. Secondaries replicate the primary's operation log.
+Denormalization is a latency trade, not a modeling shortcut. If the order document stores product name and price at checkout time, that duplication is correct because orders need historical truth. If comments store author display name, the team must decide whether old comments should update after a profile rename. If search documents duplicate catalog fields, Kafka events and rebuild jobs must keep them convergent. Duplicated data without propagation rules is data drift.
 
-Production properties:
+The aggregation pipeline is powerful but not free. `$match` early with an index can be cheap. `$lookup` on a hot path turns document access back into join-like behavior. `$unwind` multiplies intermediate rows. `$group` and `$sort` can hold memory or spill to disk. Pipelines used for admin reporting may be fine; pipelines inside high-QPS user requests need the same scrutiny as relational query plans.
 
-- A majority of voting nodes is required to elect a primary.
-- Failover causes a short write interruption.
-- Drivers can discover topology changes but applications still see transient errors.
-- Replica placement should consider zones, racks, and regions.
+Document growth is one of the most common MongoDB failures. Arrays are seductive because they match JSON APIs, but unbounded arrays change the write and read profile over time. A user document with addresses is fine. A user document with every login event, notification, or audit record is an outage seed. Large documents increase network transfer, BSON decoding, cache pressure, and update cost. If the application paginates the child data, the child data probably deserves its own collection.
 
-## Primary-secondary replication
+Hot documents create concurrency and throughput limits. A single counter document updated thousands of times per second, a single inventory record hit by a flash sale, or a daily stats document receiving all events can become the serialized point in an otherwise distributed system. The usual fix is to split the write path: bucket counters, append events, aggregate asynchronously, shard by tenant or hash, or use Redis for temporary high-frequency counters and flush durable summaries later.
 
-The primary accepts writes and secondaries apply them asynchronously. This means secondaries can lag.
+Schema evolution is a deployment problem. MongoDB allows old and new documents to coexist, but Java code must read both during rolling deploys. The safe sequence is to deploy readers that tolerate missing/new fields, then write the new shape, then backfill if needed, then remove old compatibility. For non-trivial transformations, a `schemaVersion` field is often cheaper than guessing document shape from nullable fields.
 
-Read behavior:
-
-- Primary reads give the freshest normal view.
-- Secondary reads can reduce primary load but may be stale.
-- Read preference must be chosen per endpoint, not globally.
-
-## Elections and failover
-
-If the primary fails or loses majority, eligible nodes elect a new primary. Elections prevent split brain by requiring majority.
-
-Application impact:
-
-- Some writes fail during election.
-- In-flight operations can have ambiguous outcome.
-- Retryable writes help, but business operations still need idempotency.
-- Weak write concern can lose writes during failover.
-
-## Replication lag
-
-Lag is the delay between primary commit and secondary application.
-
-Causes:
-
-- Slow disks.
-- Network saturation.
-- Heavy write bursts.
-- Large index builds.
-- Secondary under-provisioning.
-- Long-running operations.
-
-Effects:
-
-- Stale secondary reads.
-- Longer recovery after failure.
-- Smaller effective oplog window.
-- Failover to a node missing recent writes if write concern is weak.
-
-## Read and write concerns
-
-**Write concern** controls acknowledgement level. `majority` means a majority of replica set members acknowledged the write.
-
-**Read concern** controls what data is visible to reads. Stronger concerns can avoid reading data that may roll back, at latency cost.
-
-Production choice:
-
-- Critical state: primary reads and majority writes.
-- Dashboards/reporting: secondary reads may be acceptable.
-- Low-value telemetry: weaker settings may be fine if loss is acceptable.
-
-## Fault tolerance and consistency implications
-
-Replication increases fault tolerance but creates consistency choices. A system cannot use secondary reads everywhere and still promise read-your-writes. It cannot use weak writes and expect no rollback risk. The service contract must match database settings.
+Single-document atomicity is MongoDB's cheapest consistency primitive. Conditional updates can enforce state transitions without a transaction: update an order from `NEW` to `PAID` only if the current status is `NEW`. This pattern scales better than wrapping broad service logic in multi-document transactions. If the invariant naturally fits in one document, model it there. If it spans multiple documents or services, be honest about the coordination cost.
 
 ---
 
-# Sharding
+# MongoDB Indexing Mechanics
 
-Sharding splits data across shards. Each shard owns part of the dataset. MongoDB commonly uses sharded clusters where each shard is itself a replica set.
+MongoDB indexes are B-Tree-like ordered structures. A query that can use a selective index walks a small ordered structure and fetches matching documents. A query without a useful index scans documents, tests predicates, possibly sorts in memory, and becomes slower as the collection grows. Indexing is not an afterthought; it is part of API design.
 
-## Why sharding exists
+Compound indexes encode field order. For a tenant-scoped order list filtered by `tenantId` and `status`, sorted by `createdAt`, an index like `{ tenantId: 1, status: 1, createdAt: -1, _id: -1 }` can support equality filters and stable cursor pagination. If the API later adds filtering by `customerId`, the index may no longer fit. One index per field is not equivalent to one compound index matching the request.
 
-Sharding is used when one replica set cannot handle:
+Cardinality controls selectivity. An index on `status` where values are `NEW`, `PAID`, and `CANCELLED` may not reduce much work by itself. Combined with `tenantId` and time range, it can become useful. Indexes on low-cardinality fields often look correct in code review and fail in production because they still examine too many documents.
 
-- Data volume.
-- Write throughput.
-- Working set size.
-- Tenant isolation needs.
-- Operational blast radius.
+Multikey indexes index array elements. They make tag-like searches possible but can explode index entries when arrays grow. This is why array size is an indexing concern, not only a document modeling concern. A large indexed array amplifies writes and increases index memory requirements.
 
-Sharding does not fix bad query design. A collection scan across ten shards is still a collection scan, now multiplied.
+TTL indexes remove documents in the background. They are good for sessions, reset tokens, temporary imports, and expiring locks if the application still checks expiration logically. They are not precise timers. If security depends on a reset token expiring at exactly 10:00:00, the read path must validate the timestamp, not rely on physical deletion.
 
-## Shard keys
+Partial indexes are operationally useful because they reduce index size and can express real constraints, such as unique email only for non-deleted users. Sparse and partial behavior must be understood by the query writer; a query that does not include the partial filter may not use the index as expected.
 
-The shard key decides where documents live. It must balance four concerns:
+Covered queries avoid fetching the full document because the index contains all fields needed by filter and projection. They are useful for high-QPS list endpoints returning small rows. They are not a reason to put large or volatile fields into indexes. Every indexed field increases write amplification.
 
-| Concern | Requirement |
-|---|---|
-| Cardinality | Enough distinct values to distribute data. |
-| Write distribution | Inserts/updates should not hit one shard. |
-| Query targeting | Common reads should include the shard key. |
-| Stability | Values should not change frequently. |
+`explain()` is the interface between application assumptions and database reality. Engineers look at whether the winning plan uses the intended index, how many keys and documents were examined, whether a sort stage exists, and whether the query returns a tiny fraction of what it scans. A query that returns 20 documents after examining 2 million is a production incident even if it looks functionally correct.
 
-Bad shard keys:
-
-- `status`: low cardinality.
-- `createdAt`: monotonic write hotspot.
-- Field absent from common queries: scatter-gather reads.
-- Tenant ID alone when one tenant is much larger than all others.
-
-## Chunk balancing
-
-MongoDB splits sharded data into chunks and migrates chunks between shards to balance distribution. Balancing consumes resources:
-
-- Network bandwidth.
-- Disk I/O.
-- Metadata updates.
-- Cache disruption.
-
-Balancing is normal, but heavy migrations during peak traffic can affect latency.
-
-## Hot shards
-
-A hot shard receives disproportionate traffic. Causes:
-
-- Monotonic shard key.
-- Hot tenant.
-- Hot product or account.
-- Query pattern that targets one shard.
-- Uneven data distribution.
-
-Mitigation:
-
-- Hash component for write distribution.
-- Time or hash bucketing.
-- Tenant tier isolation.
-- Read caching for hot keys.
-- Revisit data model before adding shards blindly.
-
-## Distributed query costs
-
-Queries with shard key can be routed to one shard. Queries without shard key may be broadcast to all shards and merged by the router.
-
-Costs:
-
-- Higher latency.
-- More CPU across cluster.
-- More network traffic.
-- More complex sorting/limiting.
-- Harder query predictability.
-
-## Resharding difficulty
-
-Changing shard key after a collection is large is expensive and operationally risky. Modern MongoDB supports resharding, but it still consumes resources and requires planning.
-
-Before sharding, test expected data distribution and top query patterns. Shard key choice is a long-term architecture decision.
+Indexes improve reads by creating extra write work. Every insert must add index entries. Every update to indexed fields must update index structures. Every delete must remove index entries. A write-heavy collection with excessive indexes pays continuous write amplification and memory pressure. Removing unused indexes is performance work, but it must be done carefully because a rarely used operational endpoint may depend on them.
 
 ---
 
-# Transactions and Consistency
+# MongoDB Replication and Elections
 
-NoSQL systems often optimize for single-record or partition-local operations because distributed transactions require coordination and reduce throughput.
+A MongoDB replica set has one primary that accepts writes and secondaries that replicate the oplog. The oplog is the ordered stream of operations secondaries apply. Replication is asynchronous unless the client waits for a stronger write concern. The difference between “primary accepted it” and “majority replicated it” is the difference between low latency and stronger failover safety.
 
-## Single-document atomicity
+Elections require majority. This is the mechanism that prevents split brain. If the current primary cannot see a majority, it must step down or stop being able to safely accept writes. During this window, Spring Boot services see transient write failures, driver retries, or timeouts. The application cannot assume the database is continuously writable just because the cluster has replicas.
 
-MongoDB guarantees atomic updates within one document. This is the cheapest consistency boundary.
+Replication lag is not only a metric; it changes what users observe. If a service writes a profile update and then reads from a secondary, the user can see old data. If an API Gateway routes the next request to a different instance with a driver configured for secondary reads, read-your-writes can break. For critical flows, read from primary or use causally consistent sessions where appropriate.
 
-Use it for:
+Write concern chooses acknowledgement. `w:1` returns after the primary accepts the write. `majority` waits for a majority of voting nodes. Majority writes cost latency, especially across zones or regions, but reduce rollback risk during failover. Weak write concern may be acceptable for low-value telemetry but is dangerous for order state, account changes, or idempotency markers.
 
-- Order status and embedded order lines.
-- User preference updates.
-- Inventory reservation if modeled as one document and contention is acceptable.
-- Versioned state transitions with conditional update.
+Read concern chooses visibility semantics. Stronger read concern can avoid observing data that may roll back, but it can wait longer or reduce availability. Read concern and read preference are often confused. Read preference chooses where to read; read concern chooses what visibility guarantee is required.
 
-Conditional updates are often more scalable than transactions:
-
-```javascript
-db.orders.updateOne(
-  { _id: orderId, status: "NEW" },
-  { $set: { status: "PAID", paidAt: now } }
-)
-```
-
-The filter enforces the state transition atomically.
-
-## Multi-document transactions
-
-MongoDB supports multi-document ACID transactions. They are useful when multiple documents in the same deployment must change together and the write set is small.
-
-Costs:
-
-- More coordination.
-- More memory and transaction state.
-- Longer lock/resource retention.
-- Retry handling for transient transaction errors.
-- Higher latency, especially in sharded clusters.
-
-Use them deliberately, not as a default around every repository method.
-
-## Distributed transaction costs
-
-Cross-node or cross-service transactions are expensive because participants must coordinate commit/rollback. During failures, participants can be uncertain. In microservices, distributed transactions also couple service availability.
-
-Production systems usually prefer:
-
-- Outbox pattern.
-- Kafka events.
-- Sagas.
-- Idempotent consumers.
-- Compensating actions.
-- Reconciliation jobs.
-
-## Retry logic
-
-Distributed operations can fail after partial success. Retrying safely requires:
-
-- Idempotency key.
-- Unique constraint or deduplication table/collection.
-- Version checks.
-- Conditional updates.
-- Retry budget and backoff.
-- Clear handling of ambiguous timeout.
-
-Never retry payment, order creation, or external side effects without an idempotency design.
-
-## Why NoSQL avoids distributed transactions
-
-Avoiding distributed transactions improves latency, availability, and throughput. The cost is that the application must handle eventual consistency explicitly. This is acceptable when the business workflow can tolerate intermediate states and repair mechanisms.
+Failover makes ambiguous outcomes common. A Java service sends a write, the primary commits locally, the network drops, an election happens, and the client sees a timeout. Did the write happen? The only safe answer is that the client may not know. This is why operations that create external effects need idempotency keys and unique constraints. Retrying blindly can create duplicate orders, duplicate emails, or duplicate payment attempts.
 
 ---
 
-# Redis
+# MongoDB Sharding and Distributed Queries
 
-Redis is an in-memory data structure store. In backend systems it is usually used for derived, temporary, or coordination data where low latency matters more than relational querying.
+Sharding distributes a collection across shards using a shard key. Each shard is usually a replica set, so sharding and replication stack: sharding splits data; replication copies each split for availability. The `mongos` router uses metadata from config servers to decide which shard should receive a request.
 
-## In-memory storage
+A good shard key has high cardinality, distributes writes, appears in common queries, and does not change. These requirements conflict. A monotonically increasing timestamp has high cardinality but sends new writes to the same range. A tenant ID targets tenant queries but fails if one tenant dominates traffic. A hashed key spreads writes but may weaken range-query locality. Shard key design is choosing which pain will be least expensive later.
 
-Redis is fast because hot data is in memory and operations are simple. The constraint is memory cost and eviction behavior. Memory sizing must include object overhead, replication buffers, fragmentation, and peak load.
+Chunk balancing moves ranges of data between shards. It keeps distribution healthy but consumes disk, network, and cache. During heavy balancing, query latency can shift because chunks move and caches cool. Teams sometimes discover too late that the cluster is “balanced” by data size but not by traffic because one shard owns the hot tenant or hot key range.
 
-## Caching
+Scatter-gather queries are the tax for missing shard-key predicates. If a query does not include enough shard key information, `mongos` broadcasts to multiple shards and merges results. Sorting, limiting, grouping, or joining after scatter-gather multiplies work. A query that was acceptable on one replica set may become unacceptable after sharding because it now runs everywhere.
 
-Common pattern: cache-aside.
+Resharding is possible but expensive. It means rewriting physical placement for large data while the application continues to operate. Even when the database supports online resharding, the operation consumes I/O and introduces risk. Experienced teams model expected cardinality, tenant growth, and top queries before the first shard key is chosen because changing it later is an architectural migration, not a small refactor.
 
-1. Service reads from Redis.
-2. On miss, service reads MongoDB/SQL.
-3. Service stores result in Redis with TTL.
-4. Writes invalidate or update the cache.
-
-Production requirements:
-
-- Short Redis timeouts.
-- Fallback behavior when Redis is down.
-- TTL jitter to avoid synchronized expiry.
-- Cache key versioning.
-- Protection against caching invalid data.
-
-## TTL
-
-TTL is useful for sessions, tokens, temporary locks, and cached data. Expiry is not a business scheduler. Keys can expire before or after the exact moment depending on Redis internals and access patterns.
-
-## Eviction
-
-When Redis reaches memory limit, eviction policy decides whether to remove keys or reject writes. This is a correctness decision.
-
-Examples:
-
-- Cache: `allkeys-lru` or similar may be acceptable.
-- Sessions: eviction may log users out unexpectedly.
-- Rate limits: eviction weakens protection.
-- Locks: eviction can break coordination.
-
-## Distributed locks
-
-Redis locks are commonly implemented with `SET key value NX PX ttl`. Correct usage requires:
-
-- Unique random token per owner.
-- Compare-and-delete release script.
-- Short TTL.
-- Handling lock expiry while work continues.
-- Idempotent protected operation.
-
-Use Redis locks for low-risk coordination. Do not rely on them as the only correctness mechanism for critical financial invariants.
-
-## Pub/Sub
-
-Redis Pub/Sub sends messages to currently connected subscribers. It is not durable and does not replay missed messages. Use it for live notifications where missed messages are acceptable. Use Kafka or Redis Streams when durability and consumer recovery matter.
-
-## Persistence
-
-Redis persistence options:
-
-- **RDB**: point-in-time snapshots.
-- **AOF**: append-only log, better durability with write overhead.
-- **Both**: common when Redis data is important.
-
-Persistence does not make Redis equivalent to a relational source of truth. Recovery time, data loss window, replication mode, and failover behavior must be understood.
-
-## Cache invalidation
-
-Strategies:
-
-- TTL-only: simple, stale until expiry.
-- Explicit invalidation on write: fresher, more coupling.
-- Write-through: cache updated with DB write, more latency.
-- Event-driven invalidation: Kafka event invalidates Redis asynchronously.
-- Stale-while-revalidate: serve old data while one worker refreshes.
-
-## Cache stampede
-
-A stampede happens when many requests miss the same hot key and rebuild it simultaneously. It can overload MongoDB/SQL.
-
-Controls:
-
-- TTL jitter.
-- Request coalescing.
-- Short Redis lock around rebuild.
-- Serve stale data briefly.
-- Prewarm hot keys.
-- Rate limit rebuilds.
+Unique constraints become more subtle in sharded collections. Global uniqueness is expensive unless the unique index includes the shard key or the system can coordinate globally. This is why domain identifiers and tenant boundaries should be designed together.
 
 ---
 
-# Cassandra
+# Transactions, Retries, and Idempotency
 
-Cassandra is a distributed wide-column store optimized for high write throughput and availability with predictable query patterns.
+NoSQL systems try to keep the common write path local: one document, one partition, one leader, or one quorum. Multi-document and distributed transactions break that locality. They require tracking transaction state, coordinating commit, holding resources longer, detecting conflicts, and retrying ambiguous failures. The cost shows up as latency, lower throughput, and more failure cases during elections or partitions.
 
-## Wide-column storage
+MongoDB supports multi-document transactions, but they should protect real invariants, not compensate for relational modeling habits. A small transaction that updates two documents inside the same service boundary can be reasonable. A transaction wrapped around every repository call is usually a sign that the document model is wrong or the service is ignoring cheaper primitives like conditional updates.
 
-Data is organized by partition key and clustering columns. Rows in the same partition are stored together and sorted by clustering key.
+Cross-service consistency should not depend on a transaction spanning MongoDB, Redis, Kafka, and another service database. The usual production pattern is local commit plus outbox. The service writes durable state and an outbox event in one local atomic boundary. A publisher sends the event to Kafka. Consumers update their own stores idempotently. If a consumer fails, Kafka replay or reconciliation repairs the derived state.
 
-Design starts from queries:
+Retry logic is dangerous because failures are often ambiguous. A timeout after sending a write does not prove the write failed. A retry after a Kafka rebalance may process the same event again. A Redis lock may expire while the worker is still running. Idempotency is the control surface: unique request IDs, conditional updates, processed-event records, version checks, and deterministic side effects.
 
-- Which partition is read?
-- What range inside the partition is needed?
-- How large can the partition become?
-- What TTL/delete behavior will create tombstones?
+Write amplification appears whenever one logical change writes multiple physical structures: primary document, several indexes, oplog, journal, replicas, Kafka outbox, Redis invalidation, search document, and audit log. Read amplification appears when one API request has to fetch data from multiple collections, services, caches, or shards. Scaling work often reduces amplification by changing the data model, adding a read model, or accepting controlled staleness.
 
-## AP-oriented architecture
+---
 
-Cassandra can continue serving requests when some nodes are unavailable, depending on consistency level and replication factor. It is often used where availability and write throughput matter more than immediate global consistency.
+# Redis Internals and Cache Behavior
 
-AP-oriented does not mean correctness is ignored. It means the application chooses consistency level and handles staleness/conflict risks.
+Redis is a memory-first data-structure server. The request path is short: client command, event loop processing, in-memory structure mutation or lookup, optional persistence/replication work, response. This is why Redis can be extremely fast and also why slow commands, big keys, network stalls, or persistence pauses are visible across clients.
 
-## Partition keys
+Memory is the real Redis capacity boundary. Key count, value size, allocator fragmentation, replication buffers, client output buffers, and persistence overhead all matter. A cache that “fits” by raw value size can still OOM after overhead. Once memory pressure hits, eviction policy becomes business behavior. Evicting product cache is acceptable; evicting sessions or idempotency keys can break user experience or correctness.
 
-The partition key controls distribution. A good key spreads writes and keeps partitions bounded.
+Cache-aside is the common Spring Boot pattern. The service reads Redis first, reads MongoDB or SQL on miss, then stores the value with TTL. On writes, it invalidates or updates the cache. The failure case is not the happy path miss; it is the write that commits but cache invalidation fails, or the hot key that expires during peak traffic and causes thousands of threads to rebuild the same value.
 
-Time-series example:
+Cache stampede is a distributed coordination problem disguised as caching. If a product page key expires and all API instances miss simultaneously, the database receives a burst it was never sized for. TTL jitter, request coalescing, short rebuild locks, stale-while-revalidate, and prewarming all exist to keep cache misses from aligning.
 
-```text
-partition key: device_id + day_bucket
-clustering key: event_time
-```
+Cache invalidation is consistency design. TTL-only accepts stale data until expiry. Explicit invalidation reduces staleness but couples the write path to Redis availability. Kafka-driven invalidation decouples services but introduces delay, duplicate events, and ordering issues. A mature system often combines event invalidation with TTL as a safety net.
 
-This avoids one endless partition per device and supports efficient device/day reads.
+Redis distributed locks are useful but frequently overtrusted. `SET key value NX PX ttl` is only the start. The lock owner needs a unique token, release must compare token before delete, TTL must cover expected work without blocking forever, and the protected operation must tolerate duplicate execution. If losing the lock creates financial inconsistency, Redis should not be the only guard.
 
-## Tunable consistency
+Redis Pub/Sub is ephemeral. Subscribers that are offline miss messages. It fits live notifications where loss is acceptable. Kafka or Redis Streams fit durable consumer recovery better. Treating Pub/Sub like a durable broker leads to invisible data loss during deploys or reconnects.
 
-Cassandra consistency levels include `ONE`, `QUORUM`, and `ALL`.
+Persistence changes Redis failure behavior but not its basic identity. RDB snapshots can lose recent writes. AOF reduces loss but adds write overhead and rewrite behavior. Replication is often asynchronous, so failover can promote a replica missing recent writes. If Redis stores critical state, the team must explicitly accept the data-loss window and recovery model.
 
-Tradeoff:
+---
 
-- `ONE`: lower latency and higher availability, higher stale-read risk.
-- `QUORUM`: stronger consistency if read/write quorums overlap, higher latency.
-- `ALL`: strongest acknowledgement, lowest availability.
+# Cassandra Architecture
 
-## Time-series workloads
+Cassandra is built around partitioned, replicated, write-optimized storage. There is no single primary for the whole database. The partition key is hashed into a token space, replicas are placed across nodes, and coordinators route reads and writes to the appropriate replicas. This architecture favors availability and write throughput but requires query-first modeling.
 
-Cassandra fits append-heavy time-series workloads when queries are predictable and partitions are bounded. It is weak for ad-hoc analytics unless data is copied to analytical storage.
+The write path is optimized for appends. A write reaches a coordinator, is sent to replicas, recorded in commit log, applied to an in-memory memtable, and later flushed to SSTables. Compaction merges SSTables over time. This is why writes are fast and why compaction, tombstones, and disk amplification matter operationally.
 
-Production risks:
+The read path can be more expensive than the write path. Cassandra may check memtables, multiple SSTables, bloom filters, partition indexes, and reconcile replicas depending on consistency level. Poor partition design or many SSTables increase read amplification. A table that writes beautifully can read poorly if partitions are huge or queries do not match clustering order.
 
-- Huge partitions.
-- Hot partitions.
-- Tombstone buildup from TTL/deletes.
-- Compaction pressure.
-- Query patterns not matching table design.
+Partition keys are the architecture. A key like `device_id + day_bucket` keeps time-series partitions bounded and queryable. A key like `device_id` alone may create a partition that grows forever. A key with low cardinality creates hot nodes. The model must distribute writes and keep reads bounded at the same time.
+
+Tunable consistency controls how many replicas must participate. `ONE` reduces latency and improves availability but can read stale data. `QUORUM` requires overlapping read/write quorums for stronger consistency but costs latency and can fail when too many replicas are unavailable. `ALL` maximizes acknowledgement but is fragile. The consistency level is part of the endpoint contract, not just a database setting.
+
+Deletes and TTL create tombstones. Tombstones must remain long enough for replicas to learn about deletions, then compaction can remove them. Heavy TTL workloads can create tombstone pressure, making reads slower and compaction heavier. Time-series systems using Cassandra must design retention, bucket size, and compaction strategy together.
+
+Cassandra is a poor fit for ad-hoc product filtering or relational joins. It is a strong fit when the service knows queries upfront and needs high write throughput across nodes or regions. Experienced teams often write multiple denormalized tables for different queries and accept that consistency between them is application-managed.
 
 ---
 
 # Binary Data Storage
 
-Binary data should usually be separated from operational document data.
+Large binary objects rarely belong in operational database documents. Images, PDFs, and videos have different access patterns, CDN behavior, retention rules, and backup economics from metadata. Storing them inside MongoDB documents expands the working set, slows backup/restore, and makes ordinary queries carry storage they do not need.
 
-## GridFS
+The common production pattern is object storage for bytes and MongoDB for metadata. The document stores owner, object key, bucket, content type, size, checksum, processing status, and timestamps. The file is served through CDN or signed URL. The database controls authorization and lifecycle; object storage handles large-byte durability and delivery.
 
-GridFS stores files in MongoDB by splitting them into chunks and storing metadata. It can be useful when files must be managed inside MongoDB's security, backup, and replication model.
+GridFS stores files in MongoDB by chunking them and storing metadata. It is useful when files must be replicated and backed up exactly with MongoDB or when operational constraints require database-managed file storage. It is not the default answer for product images in a high-traffic web application because it pushes file-serving load into the database tier.
 
-Costs:
-
-- Database storage grows quickly.
-- Backups and restores become heavier.
-- File traffic competes with operational queries.
-- CDN/object-storage features are not native.
-
-## Object storage
-
-Most systems store files in S3-compatible object storage and keep metadata in MongoDB.
-
-Metadata document:
-
-```json
-{
-  "_id": "img_123",
-  "ownerId": "product_42",
-  "bucket": "product-images",
-  "objectKey": "products/42/main.jpg",
-  "contentType": "image/jpeg",
-  "size": 248113,
-  "checksum": "sha256:...",
-  "createdAt": "2026-05-16T10:00:00Z"
-}
-```
-
-## Metadata patterns
-
-Store in the database:
-
-- Owner and authorization fields.
-- Object key and bucket.
-- Content type and size.
-- Checksum.
-- Processing status.
-- Lifecycle timestamps.
-
-Use async cleanup for orphaned objects when DB write fails after upload or object upload fails after metadata creation.
-
-## Why images are usually outside DB
-
-Images and videos are large, accessed differently, cached by CDN, and backed up differently. Keeping them in the primary database bloats working set and slows operational backup/restore. The database should usually store the reference and business metadata, not the bytes.
+The difficult part is cross-system consistency. If the service uploads to object storage and then fails before writing metadata, an orphaned object remains. If it writes metadata first and upload fails, the database points to missing bytes. Systems solve this with pending states, checksums, background cleanup, idempotent upload keys, and reconciliation jobs.
 
 ---
 
-# NoSQL in Microservices
+# NoSQL in Spring Boot Microservices
 
-NoSQL in microservices is mostly about ownership and consistency boundaries.
+In microservices, NoSQL is usually tied to data ownership. A catalog service owns product documents. An order service owns order state. A session service owns Redis session keys. Other services should not write directly into those stores because direct database access bypasses invariants and turns private schema into public API.
 
-## Database per service
+Polyglot persistence is useful only when each database removes a real bottleneck. MongoDB can hold catalog aggregates, Redis can absorb hot reads and session lookups, Cassandra can ingest events, and SQL can protect financial state. The cost is operational: more drivers, connection pools, backups, dashboards, failure modes, and team knowledge.
 
-Each service owns its data. Other services access it through APIs or events, not direct collection/table access. Direct database sharing creates hidden coupling and makes schema changes risky.
+Kafka is the bridge between local consistency and system-wide eventual consistency. A Spring Boot service updates its local database, writes an outbox event, publishes to Kafka, and consumers update their own stores. This avoids a distributed transaction across services but accepts that other services lag. The lag must be visible and acceptable.
 
-Example:
+Event-driven systems fail through duplicates, reordering, poison messages, and missed side effects. Idempotent consumers are mandatory. A consumer updating MongoDB should store event ID or version, apply only newer state, and make repeated processing harmless. A consumer invalidating Redis should tolerate deleting a key that is already gone. A consumer sending email should deduplicate before external side effects.
 
-- `catalog-service`: MongoDB product documents.
-- `order-service`: SQL or MongoDB order state.
-- `session-service`: Redis.
-- `analytics-service`: Cassandra or analytical storage.
+API Gateway and distributed caching add another consistency layer. If the gateway caches responses or routes requests across service instances, read-after-write behavior depends on cache invalidation, routing, and replica read preferences. A user updating profile data may hit one service instance that writes MongoDB, then another instance that reads Redis or a secondary and returns old data. The architecture must decide whether that is acceptable or force primary/cache-bypassed reads for that workflow.
 
-## Polyglot persistence
-
-Different services can use different databases when the workload justifies it. The cost is more operational knowledge, monitoring, backup strategy, and incident complexity.
-
-Use polyglot persistence when one database would force bad modeling or bad runtime behavior.
-
-## Eventual consistency between services
-
-Cross-service workflows usually cannot rely on one local transaction. Services publish events and update their own stores asynchronously.
-
-Production requirements:
-
-- Source-of-truth definition.
-- Idempotent event processing.
-- Event ordering strategy.
-- Versioning and schema evolution.
-- Dead-letter/retry handling.
-- Reconciliation jobs.
-
-## Kafka integration
-
-Kafka is commonly used to propagate changes from NoSQL-backed services.
-
-Patterns:
-
-- **Outbox**: write state change and outbox record in the same database transaction or atomic boundary, then publish to Kafka.
-- **Read model**: consume events and build MongoDB documents optimized for reads.
-- **Cache invalidation**: consume change events and delete/update Redis keys.
-- **Audit/event stream**: preserve business events for replay.
-
-## Idempotent consumers
-
-Consumers must handle duplicate and out-of-order messages.
-
-Techniques:
-
-- Store processed event IDs.
-- Use idempotency keys.
-- Apply only if event version is newer.
-- Use unique constraints for natural deduplication.
-- Make updates deterministic.
-
-## Cache-aside pattern
-
-Cache-aside keeps Redis outside the write transaction:
-
-- Read from cache.
-- On miss, read source DB and populate cache.
-- On write, update DB and invalidate cache.
-
-Failure behavior must be explicit. If invalidation fails, TTL or event replay must eventually repair stale cache.
+Connection pools are part of service stability. A MongoDB or Redis outage should not consume every Tomcat/Netty thread. Pools need bounds, timeouts, and circuit breakers. Retries need budgets and jitter. Without backpressure, a slow database turns into gateway timeouts, then retry storms, then wider outage.
 
 ---
 
-# Monitoring and Production Issues
+# Operational Failure Modes
 
-NoSQL reliability depends on query behavior, data growth, topology, and client configuration. Monitoring must observe the database and the Java service together.
+Slow queries are usually not mysterious. The database examines too many documents, sorts without index support, spills aggregation to disk, reads cold data, or returns too much payload. The production task is to connect an API endpoint to its physical query plan and measure documents examined, keys examined, result size, and p95/p99 latency.
 
-## Slow queries and query profiling
+Missing indexes often survive development because local data is small. The failure appears after a product launch, tenant import, or marketing campaign. A new optional filter on an endpoint can force collection scans. Query review should be part of release review for any endpoint that filters, sorts, or paginates large collections.
 
-Slow queries usually come from missing indexes, bad sort, low selectivity, unbounded result size, or inefficient aggregation.
+Memory pressure changes latency shape. MongoDB gets slower when indexes and hot documents fall out of cache. Redis becomes dangerous when it nears max memory and starts evicting or rejecting writes. Java services fail when result sets, serialization buffers, or blocked request queues grow beyond heap assumptions. OOM is frequently caused by unbounded reads that were functionally correct.
 
-Track:
+Replication lag must be treated as user-visible risk. It affects secondary reads, failover recovery, and confidence in backups or oplog windows. Lag can be caused by disk saturation, network problems, write bursts, index builds, or overloaded secondaries. Dashboards should show lag against business tolerance, not only cluster health.
 
-- p95/p99 query latency.
-- Documents examined vs returned.
-- Full collection scans.
-- Sort spills.
-- Slow aggregation pipelines.
-- Endpoint-to-query correlation.
+Hot partitions create asymmetric failure. Overall cluster CPU may look fine while one shard, Cassandra node, Redis slot, or Kafka partition is overloaded. The symptom is a narrow set of tenants, keys, or endpoints timing out. Fixing it usually requires changing key distribution, bucketing, caching, or isolating large tenants, not just adding random hardware.
 
-## Missing indexes
+Disk pressure is not just “database is almost full.” Journals, oplogs, SSTables, compaction, index builds, snapshots, and temporary aggregation files all need headroom. Running out of disk can stop writes, break replication, or prevent recovery. Time-to-full is more useful than percentage-full when growth is steep.
 
-Missing indexes are common because development datasets are small. Production review should require an index plan for every new filter/sort endpoint.
+Backups are an operational feature only after restore is tested. Replication is not backup because it replicates mistakes. A real restore plan defines RPO, RTO, backup isolation, encryption, restore procedure, and application-level validation. Teams that never restore in staging discover during incidents that backups are incomplete, too slow, or incompatible with current deployment assumptions.
 
-Symptoms:
-
-- CPU spike after feature release.
-- Latency grows with collection size.
-- High documents examined.
-- Disk I/O increases.
-
-## OOM issues
-
-OOM can occur in Redis, MongoDB, or Java services.
-
-Causes:
-
-- Redis keys exceed memory and eviction is unsafe.
-- MongoDB working set/indexes exceed memory, causing disk thrashing.
-- Java service loads large query results into heap.
-- Aggregations produce large intermediate results.
-- Connection pools and request concurrency are unbounded.
-
-## Replication lag
-
-Monitor lag continuously. It affects secondary reads, failover safety, and restore options.
-
-Alert when lag exceeds business freshness tolerance, not only when it is catastrophic.
-
-## Hot partitions and hot keys
-
-Hot partitions appear in sharded MongoDB, Cassandra, Redis Cluster, and Kafka-like systems. One key or partition receives too much load.
-
-Mitigation depends on workload:
-
-- Key bucketing.
-- Hash suffixes.
-- Tenant isolation.
-- Local caching.
-- Async aggregation.
-- Data model redesign.
-
-## Disk pressure
-
-Disk problems cause database-wide instability:
-
-- Journal/oplog growth.
-- Index growth.
-- Compaction needs.
-- Backup snapshots.
-- Temporary aggregation files.
-- Log files.
-
-Disk alerts should include growth rate and time-to-full, not only percentage used.
-
-## Backup and restore
-
-Backups are not complete until restore has been tested.
-
-Production plan:
-
-- Define RPO and RTO.
-- Automate backups.
-- Store backups separately from primary failure domain.
-- Test restore regularly.
-- Document restore process.
-- Validate application-level integrity after restore.
-
-## Connection pool exhaustion
-
-Java services can overload databases through too many concurrent operations.
-
-Controls:
-
-- Bounded connection pools.
-- Request timeouts.
-- Circuit breakers.
-- Bulkheads per dependency.
-- Backpressure on expensive endpoints.
-- Retry budgets with jitter.
-
-A database outage often becomes a service outage because threads block waiting for connections. Pool metrics are production signals.
+Connection pool exhaustion is a classic cascading failure. Database latency rises, application threads wait longer, pools fill, request queues grow, gateway retries multiply traffic, and the database receives even more work. Bulkheads, timeouts, circuit breakers, and retry budgets are not optional around NoSQL dependencies.
 
 ---
 
-# CAP and PACELC
+# CAP and PACELC in Real Systems
 
-CAP and PACELC are useful when tied to concrete failure behavior and latency decisions.
+CAP is only useful when described as behavior during partition. A distributed system cannot guarantee that every reachable node answers every request and that every answer reflects the latest global state while nodes cannot communicate. If it preserves consistency, it refuses some operations. If it preserves availability, it accepts stale or conflicting operations and repairs later.
 
-## CP vs AP systems
+CA is not a serious target for a distributed database because partitions are part of the environment. A single-node system can avoid partition tolerance, but a multi-node database cannot. The practical question is which requests are allowed to fail during partition and which are allowed to return stale data.
 
-**CP systems** preserve consistency during partitions by refusing some operations. They are suitable for coordination, metadata, and correctness-critical state.
+MongoDB replica sets with majority elections are CP-leaning for writes. A primary that loses majority should stop accepting writes to avoid split brain. With majority write concern, acknowledged writes are safer across failover. With secondary reads or weak write concern, the client can observe more availability or lower latency but weaker freshness and rollback safety.
 
-**AP systems** preserve availability during partitions by allowing operations that may be stale or conflicting and resolving later. They are suitable when continuous operation is more important than immediate global agreement.
+Cassandra is commonly AP-leaning because it can continue operating with reachable replicas depending on consistency level. `ONE` favors availability and latency. `QUORUM` coordinates more replicas for stronger consistency. Cassandra is not simply “inconsistent”; it exposes the consistency-latency-availability trade to the application.
 
-Many databases are configurable; behavior depends on read/write settings, topology, and client choices.
+Redis depends on topology. A standalone Redis instance is outside distributed CAP discussion. Redis with replication or cluster has asynchronous replication, failover windows, and slot availability behavior. As a cache, Redis often intentionally chooses latency over strict freshness. As a lock or primary state store, its failover semantics must be treated much more carefully.
 
-## Why CA is unrealistic
-
-A distributed system cannot assume the network always works. If a partition occurs, the system cannot both answer every reachable request and guarantee every answer reflects the latest global state. CA is realistic only when there is no partition to tolerate, such as a single-node system.
-
-## MongoDB CAP behavior
-
-MongoDB replica sets with primary elections and majority write concern are CP-leaning for writes. If a primary cannot reach majority, it should not continue accepting writes as primary. This protects consistency and prevents split brain.
-
-Client settings can weaken or change observed behavior:
-
-- Secondary reads can be stale.
-- Weak write concern can increase rollback/loss risk.
-- Majority reads/writes add latency.
-
-## Cassandra CAP behavior
-
-Cassandra is commonly AP-oriented with tunable consistency. It can keep accepting operations on available replicas depending on consistency level, then converge through replication and repair mechanisms.
-
-Using `QUORUM` moves behavior toward stronger consistency at the cost of latency and availability. Using `ONE` favors latency and availability but accepts more stale-read risk.
-
-## Redis tradeoffs
-
-Redis standalone is not a distributed CAP system. Redis replication, Sentinel, or Cluster introduce distributed tradeoffs:
-
-- Replication is often asynchronous.
-- Failover can lose recent writes.
-- Cluster partitions can make some hash slots unavailable.
-- Caches may serve stale data by design.
-
-Redis is often used where latency matters and data is derived or temporary. If it stores critical state, persistence and failover semantics must be explicitly accepted.
-
-## PACELC theorem
-
-PACELC extends CAP:
-
-- If there is a **Partition**, choose **Availability** or **Consistency**.
-- Else, choose **Latency** or **Consistency**.
-
-This matters because most tradeoffs happen during normal operation. Majority writes, quorum reads, cross-region coordination, and secondary reads all trade latency against consistency even when nothing is failing.
-
-Production examples:
-
-- MongoDB majority write concern: safer failover, higher latency.
-- Cassandra `QUORUM`: stronger freshness, slower than `ONE`.
-- Redis cache read: very low latency, possible staleness.
-- Reading from nearest replica: lower latency, weaker freshness.
+PACELC is more useful for day-to-day engineering because most production time is not partitioned. Even when the network is healthy, the system chooses latency or consistency. Majority writes wait longer. Quorum reads wait longer. Reading from the nearest replica is faster but may be stale. A Redis cache is faster but may lag the database. Architecture reviews should discuss these normal-path tradeoffs, not only disaster scenarios.
 
 ---
 
@@ -1202,173 +256,114 @@ Production examples:
 
 ## 143. What are NoSQL databases and how do they differ from relational databases?
 
-NoSQL databases are storage systems designed around non-relational access patterns: documents, key-value lookups, wide-column partitions, or graph traversals. The important production difference is not syntax; it is the operational contract.
+NoSQL databases are storage systems optimized around access patterns that do not fit normalized relational tables cleanly: document aggregates, direct key lookup, partition-local writes, or graph traversal. The production difference is the contract. A relational database gives joins, constraints, and strong transactional tools by default. A NoSQL system usually gives a more specialized read/write path and pushes more responsibility into modeling, indexing, consistency settings, and application code.
 
-Relational databases give strong schema, joins, constraints, and transactions. NoSQL systems usually trade some of that for flexible structure, partition-friendly access, lower-latency lookups, or high availability across nodes.
-
-In real backend systems:
-
-- SQL fits payments, ledgers, and data with strict relational constraints.
-- MongoDB fits document-shaped aggregates such as catalogs and profiles.
-- Redis fits cache, sessions, counters, and short-lived state.
-- Cassandra fits high-volume partitioned writes such as events or metrics.
-
-The tradeoff is that NoSQL often shifts responsibility into application design: validation, denormalization, idempotency, conflict handling, and operational monitoring.
+In a real Java backend, SQL may own payments because constraints and transactions are central, MongoDB may own product documents because the API reads product aggregates, Redis may absorb session and cache traffic, and Cassandra may store append-heavy metrics. The tradeoff is not “SQL vs NoSQL”; it is which subsystem should own which consistency and access pattern.
 
 ## 144. What are the main types of NoSQL databases? (Document, key-value, graph, columnar)
 
-The main types are document, key-value, wide-column, and graph databases.
+Document databases such as MongoDB store nested documents and are effective when API responses align with aggregate documents. Key-value databases such as Redis are optimized for known-key access, TTLs, counters, sessions, locks, and cache entries. Wide-column databases such as Cassandra organize data by partition key and clustering order, which fits high-volume writes and predictable reads. Graph databases optimize multi-hop relationship traversal.
 
-Document databases such as MongoDB store nested documents and work well when the service usually reads an aggregate as one object. Key-value databases such as Redis optimize direct lookup by key and are excellent for cache, sessions, counters, and TTL-based data. Wide-column databases such as Cassandra store partitioned rows and fit massive write-heavy workloads with predictable queries. Graph databases optimize relationship traversal, such as fraud networks or social graph paths.
-
-The architectural risk is choosing a database whose query model does not match the product. If the application needs ad-hoc filters, a pure key-value store forces manual indexes. If the application needs graph traversal, MongoDB references become expensive. If the application needs joins and constraints, SQL may be the better tool.
+The practical answer should include failure consequences. If a team uses Redis for query-heavy data, it starts building secondary indexes manually. If it uses Cassandra for arbitrary filtering, it fights the storage model. If it uses MongoDB for deep graph traversal, `$lookup` and recursive application logic become expensive. The database type should match the dominant query and failure profile.
 
 ## 145. In what cases is it better to use NoSQL instead of SQL?
 
-Use NoSQL when the workload benefits from a specialized data model or distributed behavior that SQL would handle awkwardly or expensively.
+NoSQL is a better fit when the required runtime shape is specialized: a product aggregate read as one document, a Redis key that must be read in sub-milliseconds, a Cassandra partition receiving massive time-series writes, or a graph traversal where relationship depth is the query. It is also useful when horizontal distribution and controlled eventual consistency are acceptable tradeoffs.
 
-Good production cases:
-
-- Product catalog with variable attributes by category.
-- Read-heavy document aggregates where joins would be on every request.
-- Cache/session/rate-limit data with TTL.
-- High-volume append events partitioned by key and time.
-- Event-driven read models updated from Kafka.
-- Systems that can tolerate controlled eventual consistency.
-
-SQL is usually better when the core value is relational integrity, complex joins, strict constraints, ad-hoc reporting, or multi-row transactions. The decision is not SQL versus NoSQL globally; a production architecture often uses both.
+SQL remains the stronger default when correctness depends on relational constraints, complex joins, multi-row transactions, ad-hoc reporting, or financial auditability. Many mature systems use both: SQL for order/payment invariants, MongoDB for catalog read models, Redis for caching, Kafka for propagation, and object storage for files.
 
 ## 146. What popular NoSQL databases do you know? (MongoDB, Cassandra, Redis, etc.)
 
-MongoDB is a document database used for flexible JSON-like aggregates and read models. Redis is an in-memory key-value/data-structure store used for cache, sessions, locks, counters, and rate limiting. Cassandra is a wide-column distributed database used for high-throughput writes and AP-style availability. DynamoDB is a managed key-value/document database with partition-based scaling. Neo4j is a graph database for traversal-heavy domains. Elasticsearch/OpenSearch is commonly used for search-oriented read models, not as a primary transactional database.
+MongoDB is a document database with indexes, aggregation, replica sets, and sharding. Redis is an in-memory data-structure store used heavily for caching, sessions, rate limits, locks, and counters. Cassandra is a distributed wide-column store optimized for high write throughput and tunable consistency. DynamoDB is a managed key-value/document store with partition-based scaling. Neo4j is graph-oriented. Elasticsearch or OpenSearch is often used as a search read model, although it should not be treated as a primary transactional database for most business state.
 
-The useful answer connects each database to workload. Listing names without access patterns does not show engineering judgment.
+A strong answer connects each name to write path, read path, and operational cost rather than listing products.
 
 ## 147. What is a collection in MongoDB and how does it differ from a table in SQL?
 
-A MongoDB collection groups BSON documents. A SQL table stores rows with a fixed schema, columns, constraints, and relational structure. A collection allows documents with different fields, nested objects, and arrays.
+A MongoDB collection is a group of BSON documents sharing operational concerns: indexes, validation, storage behavior, and query patterns. A SQL table enforces a fixed column schema and relational constraints. A collection allows flexible document shapes, nested fields, and arrays, but production systems still need schema discipline because Java deserialization, indexes, and queries assume specific field types and shapes.
 
-Production implication: MongoDB flexibility helps when product data evolves, but it does not remove schema responsibility. Java services still need DTO compatibility, validation, versioning, and migration strategy. Indexes are defined on collection fields, and inconsistent document shapes can break queries or cause missing-field behavior.
-
-A `products` collection can contain different attributes for phones and books. A SQL design might need subtype tables, EAV modeling, or JSON columns. MongoDB makes the read model simpler if the product page consumes the document as an aggregate.
+The difference matters during evolution. Adding a field to product documents can be a rolling change if readers tolerate missing values. Changing a field type without migration can break queries and DTO mapping. MongoDB flexibility speeds some changes but does not remove compatibility work.
 
 ## 148. What is a document in MongoDB?
 
-A document is MongoDB's record unit, stored as BSON. It can contain nested objects, arrays, typed values, dates, decimals, binary fields, and an `_id`.
+A document is the atomic record MongoDB stores, encoded as BSON. In production it should be treated as an aggregate boundary. Data that is read together, updated together, and bounded can live together. Data that grows forever or has independent access patterns should not be embedded just because JSON makes it convenient.
 
-In production, a document should represent a bounded aggregate, not an infinite container. An order document with order lines is reasonable. A user document containing every login event forever is not. Document size affects network cost, memory, serialization, update cost, and index maintenance.
-
-Good document modeling uses the request pattern: store together what is read together and updated together, but split data that grows independently or has separate query patterns.
+An order document with embedded line items is usually sensible. A user document with every notification or login event is not. The latter grows, becomes expensive to read and update, increases cache pressure, and prevents efficient pagination.
 
 ## 149. How are relationships between documents defined in MongoDB? Is there JOIN?
 
-Relationships are modeled with embedding or references. Embedding stores related data inside the parent document. References store another document's ID and resolve it with another query, application logic, or aggregation `$lookup`.
+MongoDB relationships are modeled through embedding, references, or duplication. `$lookup` exists and behaves like a join in aggregation, but join-heavy request paths usually indicate that the document model is not aligned with the access pattern. MongoDB performs best when the request targets one document or a small indexed set rather than assembling many normalized fragments at runtime.
 
-MongoDB has join-like `$lookup`, but production MongoDB design avoids join-heavy hot paths. If the application always needs child data with the parent and the child set is bounded, embedding reduces round trips and uses single-document atomicity. If the child data is large, shared, frequently updated, or independently queried, references are safer.
-
-Example: embed order items in an order, reference customer ID, and copy product price/name as a checkout snapshot. This avoids changing historical orders when product catalog data changes.
+Embedding is appropriate for bounded owned data, such as order lines. Referencing is appropriate for shared or unbounded data, such as customer identity or comments. Duplication is appropriate when a snapshot is required, such as product name and price inside an order. The real design question is how the relationship behaves under reads, writes, growth, and consistency requirements.
 
 ## 150. How is an index implemented in MongoDB and why is it needed?
 
-MongoDB indexes are B-tree-like structures that map field values to documents and keep entries ordered. They allow targeted lookup, range scans, and sorted reads without scanning the whole collection.
+MongoDB indexes are B-Tree-like structures that keep field values ordered and point to matching documents. They avoid scanning the whole collection and can support range queries, sorting, uniqueness, TTL, partial indexing, and covered queries. Without the right index, latency grows with data size.
 
-In production, indexes are required for predictable latency. A query that scans 1,000 documents in development may scan 100 million in production. Compound indexes should match real filters and sort order, for example `{ tenantId: 1, status: 1, createdAt: -1 }` for a tenant-scoped order list.
-
-The tradeoff is write cost. Every insert, update, and delete must maintain indexes. Too many indexes increase disk, memory, and write latency. Engineers validate with `explain()` and monitor documents examined, sort stages, and index usage.
+Indexes are not free. They consume memory and disk, and every write must maintain them. A write-heavy collection with many indexes pays write amplification. A production indexing strategy starts from endpoint query shape: equality fields, range fields, sort order, projection, and cardinality. `explain()` confirms whether the database examines a small bounded set or silently scans too much.
 
 ## 151. What are sharding and replication in NoSQL?
 
-Replication copies the same data to multiple nodes for durability and failover. Sharding splits different data across nodes for capacity and throughput.
+Replication copies the same data to multiple nodes so the system can survive node failure and optionally serve reads from replicas. Sharding splits different data across nodes so the system can exceed the capacity of one replica set or node group. In MongoDB, a sharded cluster usually has each shard implemented as a replica set, so both mechanisms are layered together.
 
-In MongoDB, a replica set provides primary-secondary replication and elections. A sharded cluster distributes a collection across shards using a shard key, and each shard is usually a replica set.
-
-Replication helps survive node failure. Sharding helps when one replica set cannot handle data size or write/read load. They solve different problems and are commonly combined.
+Replication introduces lag, elections, read preference, and write concern decisions. Sharding introduces shard-key design, routing, balancing, scatter-gather queries, and resharding cost. They solve different bottlenecks and create different operational problems.
 
 ## 152. How does replication differ from sharding?
 
-Replication duplicates data; sharding partitions data.
+Replication is duplication for availability; sharding is partitioning for capacity. A three-node replica set stores copies of the same dataset. A sharded cluster divides the dataset so each shard owns a subset. If each shard has replicas, the system has both capacity distribution and failover protection.
 
-If a collection has 1 TB of data, a three-node replica set stores roughly the same 1 TB on each replica. That improves availability but not per-node data size. If the collection is sharded across four shards, each shard owns part of the data. If each shard is replicated, each partition also has failover protection.
-
-Operationally, replication introduces lag, elections, read preference, and write concern. Sharding introduces shard keys, balancing, hot shards, scatter-gather queries, and resharding complexity.
+In production, confusing them leads to bad decisions. Adding replicas does not reduce per-node data size or write bottleneck on the primary. Adding shards does not automatically improve a query that lacks shard-key targeting; it can make that query more expensive by broadcasting it.
 
 ## 153. What is eventual consistency
 
-Eventual consistency means that after a write, not every replica or derived system must show the update immediately, but they should converge if no new conflicting updates happen and propagation succeeds.
+Eventual consistency means different replicas or derived systems may temporarily disagree after a write, but the system is designed to converge. The important part is the convergence design. A product update may commit to MongoDB, publish to Kafka, invalidate Redis, update search, and update another service's read model at different times.
 
-This appears constantly in microservices. A product update may commit to MongoDB first, publish to Kafka next, invalidate Redis after that, and update search later. During that window, different clients can see different versions.
-
-Production use requires boundaries: define which workflows tolerate stale data, how long staleness is acceptable, how duplicates are handled, how out-of-order events are rejected, and how reconciliation repairs missed updates. Eventual consistency without these controls becomes data drift.
+This is acceptable only when the business flow tolerates the window. Product descriptions can usually lag. Inventory, authentication, and payment state need stronger controls. Engineers use versions, idempotent consumers, outbox, retries, dead-letter handling, and reconciliation so eventual consistency is bounded rather than accidental.
 
 ## 154. How to store binary data (e.g., images) in MongoDB?
 
-Usually store images in object storage and store metadata in MongoDB. MongoDB can store binary data, and GridFS can split large files into chunks, but putting large binaries directly into operational documents bloats the database and hurts backups, working set, and query performance.
+Usually the bytes go to object storage and MongoDB stores metadata: owner, object key, content type, size, checksum, processing status, and timestamps. This keeps large file traffic out of the operational database working set and allows CDN delivery, cheaper storage, and independent lifecycle policies.
 
-A production pattern is:
-
-- Upload file to object storage.
-- Store object key, owner, content type, size, checksum, and status in MongoDB.
-- Serve through CDN or signed URLs.
-- Run cleanup for orphaned objects.
-
-Use GridFS when files must be inside MongoDB's replication/security/backup model and the operational cost is acceptable.
+GridFS is available when files need to be chunked and stored inside MongoDB's replication and backup model. It is not the default for high-traffic images because it makes the database handle large-byte storage and serving concerns. The hard production problem is consistency between object storage and metadata, solved with pending states, idempotent keys, cleanup jobs, and checksums.
 
 ## 155. What are TTL indexes in MongoDB?
 
-TTL indexes automatically delete documents after a time based on a date field. They are useful for sessions, reset tokens, verification codes, temporary imports, and short-lived records.
+TTL indexes cause MongoDB to delete documents after a timestamp or age threshold. They are useful for reset tokens, sessions, verification codes, temporary locks, and short-lived staging records. The deletion is asynchronous, so TTL should not be treated as an exact scheduler.
 
-Example:
-
-```javascript
-db.passwordResetTokens.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
-```
-
-Production implication: TTL cleanup is asynchronous and not exact. It should not be used as a precise scheduler or as the only enforcement for security-sensitive expiration. Application logic should still check expiration during use.
+For security-sensitive flows, the application must check expiration during reads. The TTL index is cleanup, not the only enforcement. Accidentally adding TTL to business data is dangerous because deletion becomes automatic and easy to miss during review.
 
 ## 156. Can transactions be used in MongoDB? If so, how?
 
-Yes. MongoDB has atomic single-document updates and supports multi-document transactions. The preferred production approach is to model invariants inside one document when possible, then use single-document atomic updates or conditional updates.
+MongoDB supports atomic single-document updates and multi-document transactions. The preferred production design is to keep core invariants inside one document when that matches the domain, then use conditional atomic updates. Multi-document transactions are available when several documents must change together, but they add coordination, latency, transaction state, and retry complexity.
 
-Multi-document transactions are used when several documents in the same MongoDB deployment must change atomically and the write set is small. They add coordination, latency, resource usage, and retry complexity. In sharded clusters the cost is higher.
-
-Across microservices, MongoDB transactions are not the usual answer. Use outbox, Kafka events, sagas, idempotent consumers, and reconciliation instead of trying to create a distributed transaction across service databases.
+In a sharded cluster, transaction cost is higher because coordination can cross shards. Across microservices, MongoDB transactions do not solve system-wide consistency. A service should use local atomic state change plus outbox, Kafka events, idempotent consumers, and reconciliation rather than trying to transact across service databases.
 
 ## 157. How is fault tolerance ensured in NoSQL databases?
 
-Fault tolerance comes from replication, leader election or quorum protocols, data partitioning, failover, client retry handling, backups, monitoring, and deployment across failure domains.
+Fault tolerance is a combination of replication, partitioning, leader election or quorum mechanics, failover, durable logs, backups, client timeouts, retries, and operational monitoring. MongoDB uses replica sets and majority elections. Cassandra replicates partitions and lets the application choose consistency level. Redis Sentinel or Cluster can fail over, but asynchronous replication means recent writes can be lost.
 
-MongoDB replica sets elect a new primary when the old one fails, but writes can fail during election and weak write concern can create rollback risk. Cassandra replicates partitions across nodes and uses tunable consistency so it can continue operating with some node failures. Redis Sentinel/Cluster can fail over, but asynchronous replication can lose recent writes.
-
-The application is part of fault tolerance: timeouts, bounded retries, idempotency, circuit breakers, and connection pool limits prevent partial database failure from becoming a full service outage.
+The application must participate. A Spring Boot service needs bounded connection pools, short dependency timeouts, retry budgets, idempotency keys, and circuit breakers. Otherwise a partial database failure becomes thread exhaustion, gateway retries, and a larger outage.
 
 ## 158. What is the CAP theorem? What is the extension of the CAP theorem?
 
-CAP says that during a network partition a distributed system must choose between consistency and availability while tolerating the partition. The useful extension is PACELC: if there is a partition, choose availability or consistency; else, choose latency or consistency.
+CAP describes the forced choice during a network partition: preserve consistency by refusing some operations, or preserve availability by answering with potentially stale or conflicting state. Partition tolerance is not optional in a real multi-node system.
 
-Production meaning: even when the system is healthy, stronger consistency often requires coordination and therefore higher latency. Majority writes, quorum reads, cross-region reads, and secondary reads are all consistency/latency decisions.
-
-Use CAP/PACELC to explain behavior under failure and normal operation, not to memorize database labels.
+PACELC extends the discussion to normal operation: if there is a partition, choose availability or consistency; else, choose latency or consistency. This is visible in everyday settings. Majority writes are safer but slower. Reading from a nearby replica is faster but can be stale. Redis cache reads are fast but may not reflect the latest database state.
 
 ## 159. Why is it impossible to ensure all three properties simultaneously?
 
-During a partition, nodes cannot coordinate. If one side accepts a write and the other side continues answering reads, the second side may return stale data. To preserve consistency, the system must reject or delay some requests. To preserve availability, it must answer despite not knowing the latest global state.
+During a partition, one side cannot know what happened on the other side. If it answers every request, it may answer from stale state or accept conflicting writes. If it refuses uncertain operations, it preserves consistency but sacrifices availability for those requests. Since partitions happen in distributed systems, consistency and availability cannot both be absolute under that failure.
 
-That is why all three cannot be guaranteed during partition. Partition tolerance is required in a real distributed system, so the real choice is consistency versus availability under failure.
-
-Example: a MongoDB node that cannot reach majority should not continue as primary because another side may elect a new primary. Refusing writes reduces availability but prevents split brain.
+MongoDB demonstrates this through majority elections. A primary that cannot reach majority must not keep accepting writes as if nothing happened, because another side may elect a new primary. Stopping writes hurts availability but avoids split brain.
 
 ## 160. Give examples of CP and AP databases.
 
-CP-style systems prioritize consistency during partitions: ZooKeeper, etcd, Consul, and MongoDB replica sets when using majority-oriented primary writes are common examples.
+ZooKeeper, etcd, and Consul are CP-style coordination systems. MongoDB replica sets with primary reads and majority write concern are CP-leaning for writes because they prefer safe leadership and majority acknowledgement over accepting writes during unsafe partitions. Cassandra and Dynamo-style systems are AP-leaning when configured for availability and eventual convergence.
 
-AP-style systems prioritize availability and convergence: Cassandra and Dynamo-style systems are common examples, depending on consistency settings.
-
-The important nuance is configuration. Cassandra with `QUORUM` behaves differently from Cassandra with `ONE`. MongoDB with primary reads and majority writes behaves differently from MongoDB with secondary reads and weak write concern. CP/AP is a failure-mode description, not a permanent marketing label.
+The nuance is configuration. Cassandra with `QUORUM` is different from Cassandra with `ONE`. MongoDB with secondary reads and weak write concern exposes different behavior than MongoDB with majority concerns. CP/AP should be explained as failure behavior, not as a permanent product label.
 
 ## 161. How does the CAP theorem manifest in MongoDB?
 
-MongoDB replica sets elect one primary through majority voting. With majority write concern, MongoDB favors consistency for writes: if a node cannot reach majority, it should not safely accept primary writes. During a partition or election, writes may be temporarily unavailable.
+MongoDB manifests CAP through replica-set leadership and majority rules. With majority write concern, writes are acknowledged only after enough replicas have them. If the primary loses majority, it cannot safely continue accepting writes, so write availability can drop during a partition or election. This is the consistency-preserving side of the tradeoff.
 
-Reads depend on client settings. Primary reads give fresher data. Secondary reads can return stale data because replication is asynchronous. Weak write concern can increase rollback risk during failover. Majority read/write concerns improve safety but add latency.
-
-In production, choose settings per workflow. Checkout or account state should use primary/majority-oriented behavior. Dashboards or non-critical reads may use secondary reads if staleness is acceptable.
+Reads depend on settings. Primary reads give the freshest normal view. Secondary reads can be stale because replication is asynchronous. Weak write concern can allow faster responses but increases rollback risk. In production, critical flows like checkout or account changes use primary/majority-oriented behavior, while dashboards may accept secondary reads and staleness for lower latency or reduced primary load.
