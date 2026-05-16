@@ -5,26 +5,6 @@
 
 ---
 
-# Table of Contents
-
-- [Kubernetes Fundamentals](#kubernetes-fundamentals)
-- [Cluster Architecture](#cluster-architecture)
-- [Core Kubernetes Objects](#core-kubernetes-objects)
-- [Networking](#networking)
-- [Storage](#storage)
-- [Configuration Management](#configuration-management)
-- [Scaling and Reliability](#scaling-and-reliability)
-- [Deployments](#deployments)
-- [Helm](#helm)
-- [Kubernetes in Backend Systems](#kubernetes-in-backend-systems)
-- [Security Basics](#security-basics)
-- [Monitoring and Observability](#monitoring-and-observability)
-- [Common Production Problems](#common-production-problems)
-- [Kubernetes Interview Q&A](#kubernetes-interview-qa)
-- [Final Revision Checklist](#final-revision-checklist)
-
----
-
 # Kubernetes Fundamentals
 
 ## What it is
