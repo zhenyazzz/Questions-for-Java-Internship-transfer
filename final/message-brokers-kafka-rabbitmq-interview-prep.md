@@ -242,88 +242,139 @@ Operational runbooks should answer: can producers publish, are consumers alive, 
 
 ### 131. What is a message broker?
 
-A broker is a stateful delivery boundary between producers and consumers. The useful production answer is not “decoupling”; it is that the broker stores or routes work while producers, consumers, networks, and downstream dependencies fail independently. The cost is explicit handling of duplicates, ordering scope, acknowledgement timing, retries, backpressure, schema evolution, and monitoring.
+- A broker is a stateful delivery boundary between producers and consumers.
+- The useful production answer is not “decoupling”; it is that the broker stores or routes work while producers, consumers, networks, and downstream dependencies fail independently.
+- The cost is explicit handling of duplicates, ordering scope, acknowledgement timing, retries, backpressure, schema evolution, and monitoring.
 
 ### 132. Which protocol is used in classic message brokers?
 
-RabbitMQ commonly uses AMQP, though it can support other protocols through plugins. AMQP exposes exchanges, queues, bindings, routing keys, acknowledgements, channels, and message properties. In practice the protocol matters because routing and ack semantics are broker-level concepts, not just client library behavior.
+- RabbitMQ commonly uses AMQP, though it can support other protocols through plugins.
+- AMQP exposes exchanges, queues, bindings, routing keys, acknowledgements, channels, and message properties.
+- In practice the protocol matters because routing and ack semantics are broker-level concepts, not just client library behavior.
 
 ### 133. What are the main production tradeoffs of brokers?
 
-Brokers improve temporal decoupling, buffering, fan-out, and failure recovery, but they introduce delayed failure, duplicate processing, stale reads, poison messages, replay risk, schema contracts, and operational state. They are appropriate when asynchronous completion is acceptable and the team can operate backlog, retries, DLQs, and idempotency.
+- Brokers improve temporal decoupling, buffering, fan-out, and failure recovery, but they introduce delayed failure, duplicate processing, stale reads, poison messages, replay risk, schema contracts, and operational state.
+- They are appropriate when asynchronous completion is acceptable and the team can operate backlog, retries, DLQs, and idempotency.
 
 ### 134. What is Kafka?
 
-Kafka is a replicated partition log. Producers append records to partition leaders, followers replicate them, consumers fetch by offset, and retention deletes records independently of consumption. Its core engineering properties are partition-scoped order, consumer-group parallelism, replay within retention, high-throughput batching, and durability controlled by replication/ISR/producer acknowledgements.
+- Kafka is a replicated partition log.
+- Producers append records to partition leaders, followers replicate them, consumers fetch by offset, and retention deletes records independently of consumption.
+- Its core engineering properties are partition-scoped order, consumer-group parallelism, replay within retention, high-throughput batching, and durability controlled by replication/ISR/producer acknowledgements.
 
 ### 135. How is Kafka different from classic queue brokers?
 
-Kafka keeps records for retention and lets many consumer groups read the same log independently. RabbitMQ-style queues generally deliver a message to a queue consumer and remove it after ack. Kafka scales by partitions and offsets; RabbitMQ scales by queues, consumers, routing, acknowledgements, and prefetch. Kafka is usually better for event streams and replayable integration; RabbitMQ is usually better for command/task dispatch and routing-heavy workflows.
+- Kafka keeps records for retention and lets many consumer groups read the same log independently.
+- RabbitMQ-style queues generally deliver a message to a queue consumer and remove it after ack.
+- Kafka scales by partitions and offsets; RabbitMQ scales by queues, consumers, routing, acknowledgements, and prefetch.
+- Kafka is usually better for event streams and replayable integration; RabbitMQ is usually better for command/task dispatch and routing-heavy workflows.
 
 ### 136. What is a Kafka topic?
 
-A topic is a named collection of partition logs. It is not the unit of ordering or parallelism; partitions are. Topic design should encode event ownership, retention, schema compatibility, key strategy, access control, and consumer expectations. A topic that mixes unrelated event types or unstable schemas becomes an operational contract nobody can safely evolve.
+- A topic is a named collection of partition logs.
+- It is not the unit of ordering or parallelism; partitions are.
+- Topic design should encode event ownership, retention, schema compatibility, key strategy, access control, and consumer expectations.
+- A topic that mixes unrelated event types or unstable schemas becomes an operational contract nobody can safely evolve.
 
 ### 137. What is a Kafka partition?
 
-A partition is an ordered append-only log with one leader, replicas, offsets, and one active consumer owner per group. It is the scaling and ordering primitive. More partitions can increase parallelism but also increase broker/controller overhead and rebalance cost. A bad key can make one partition the bottleneck even when the topic has many partitions.
+- A partition is an ordered append-only log with one leader, replicas, offsets, and one active consumer owner per group.
+- It is the scaling and ordering primitive.
+- More partitions can increase parallelism but also increase broker/controller overhead and rebalance cost.
+- A bad key can make one partition the bottleneck even when the topic has many partitions.
 
 ### 138. What are push and pull strategies?
 
-Kafka uses pull: consumers fetch batches and control pace, which supports batching and consumer-side backpressure but exposes lag when processing falls behind. RabbitMQ commonly uses push: the broker delivers messages to consumers up to prefetch. Push gives low-latency dispatch but requires careful prefetch and ack handling to avoid overloading consumers or hiding backlog in unacked deliveries.
+- Kafka uses pull: consumers fetch batches and control pace, which supports batching and consumer-side backpressure but exposes lag when processing falls behind.
+- RabbitMQ commonly uses push: the broker delivers messages to consumers up to prefetch.
+- Push gives low-latency dispatch but requires careful prefetch and ack handling to avoid overloading consumers or hiding backlog in unacked deliveries.
 
 ### 139. What are Kafka delivery semantics?
 
-At-most-once commits progress before processing and can lose records. At-least-once processes before committing and can duplicate records. Kafka transactions support exactly-once-style Kafka-to-Kafka pipelines by atomically writing output records and offsets, but external side effects still require idempotency and local transactional design.
+- At-most-once commits progress before processing and can lose records.
+- At-least-once processes before committing and can duplicate records.
+- Kafka transactions support exactly-once-style Kafka-to-Kafka pipelines by atomically writing output records and offsets, but external side effects still require idempotency and local transactional design.
 
 ### 140. What is a Kafka consumer group?
 
-A consumer group is the coordination unit for sharing partitions. Each partition is assigned to at most one consumer in the group, so parallelism is capped by partition count. Separate groups read independently from their own offsets. Scaling a service beyond partition count does not increase throughput for that topic; it only adds standby or idle instances.
+- A consumer group is the coordination unit for sharing partitions.
+- Each partition is assigned to at most one consumer in the group, so parallelism is capped by partition count.
+- Separate groups read independently from their own offsets.
+- Scaling a service beyond partition count does not increase throughput for that topic; it only adds standby or idle instances.
 
 ### 141. What is a Kafka rebalance?
 
-A rebalance redistributes partition ownership after membership, subscription, timeout, or metadata changes. It is normal but expensive: consumption can pause, in-flight work may race with revocation, and duplicates occur around failed commits. Frequent rebalances usually indicate slow processing, blocked poll loops, unstable pods, aggressive timeouts, or deployment churn.
+- A rebalance redistributes partition ownership after membership, subscription, timeout, or metadata changes.
+- It is normal but expensive: consumption can pause, in-flight work may race with revocation, and duplicates occur around failed commits.
+- Frequent rebalances usually indicate slow processing, blocked poll loops, unstable pods, aggressive timeouts, or deployment churn.
 
 ### 142. What is ZooKeeper and what replaced it in Kafka?
 
-ZooKeeper historically stored Kafka cluster metadata and participated in controller coordination. Modern Kafka can run in KRaft mode, where Kafka controllers manage metadata through an internal Raft-based quorum. The operational point is that newer clusters can remove the external ZooKeeper dependency, but metadata quorum health remains critical infrastructure.
+- ZooKeeper historically stored Kafka cluster metadata and participated in controller coordination.
+- Modern Kafka can run in KRaft mode, where Kafka controllers manage metadata through an internal Raft-based quorum.
+- The operational point is that newer clusters can remove the external ZooKeeper dependency, but metadata quorum health remains critical infrastructure.
 
 ### How does RabbitMQ routing work?
 
-A producer publishes to an exchange. The exchange evaluates bindings and routes to queues based on exchange type and routing key or headers. Direct exchanges match exact keys, topic exchanges match patterns, fanout exchanges broadcast, and headers exchanges match header predicates. If no binding matches, the message can be unroutable unless mandatory publishing/returns or alternate exchanges are configured.
+- A producer publishes to an exchange.
+- The exchange evaluates bindings and routes to queues based on exchange type and routing key or headers.
+- Direct exchanges match exact keys, topic exchanges match patterns, fanout exchanges broadcast, and headers exchanges match header predicates.
+- If no binding matches, the message can be unroutable unless mandatory publishing/returns or alternate exchanges are configured.
 
 ### How do you scale Kafka consumers?
 
-First identify whether lag is uniform or partition-skewed. Add consumers only up to partition count. If all partitions are behind, increase processing capacity, batch safely, optimize downstream calls, or add partitions. If one partition is behind, fix the key distribution or split the hot aggregate. If retries dominate, isolate failures instead of adding consumers that hammer the same dependency.
+- First identify whether lag is uniform or partition-skewed.
+- Add consumers only up to partition count.
+- If all partitions are behind, increase processing capacity, batch safely, optimize downstream calls, or add partitions.
+- If one partition is behind, fix the key distribution or split the hot aggregate.
+- If retries dominate, isolate failures instead of adding consumers that hammer the same dependency.
 
 ### Why is idempotency mandatory in consumers?
 
-Because the common safe delivery mode is process-then-commit, and any crash or commit failure after side effects causes replay. Idempotency belongs at the durable side-effect boundary: unique constraints, processed-event tables, aggregate versions, upserts, state-machine guards, and external idempotency keys. Without it, normal broker recovery creates duplicate business actions.
+- Because the common safe delivery mode is process-then-commit, and any crash or commit failure after side effects causes replay.
+- Idempotency belongs at the durable side-effect boundary: unique constraints, processed-event tables, aggregate versions, upserts, state-machine guards, and external idempotency keys.
+- Without it, normal broker recovery creates duplicate business actions.
 
 ### What ordering guarantees does Kafka provide?
 
-Kafka guarantees order only within a partition. There is no topic-wide order. To preserve order for an entity, use a stable key that maps all events for that entity to one partition and keep per-partition processing ordered. Retries, parallel handlers, retry topics, and stateful downstream writes can still break effective business ordering unless guarded by versions or state machines.
+- Kafka guarantees order only within a partition.
+- There is no topic-wide order.
+- To preserve order for an entity, use a stable key that maps all events for that entity to one partition and keep per-partition processing ordered.
+- Retries, parallel handlers, retry topics, and stateful downstream writes can still break effective business ordering unless guarded by versions or state machines.
 
 ### What is a DLQ and when should it be used?
 
-A DLQ isolates messages that the normal path cannot process after bounded attempts or non-retryable classification. It prevents one poison message from blocking a queue or partition forever. A DLQ must have alerts, ownership, replay/discard tooling, and root-cause workflow; otherwise it becomes delayed data loss.
+- A DLQ isolates messages that the normal path cannot process after bounded attempts or non-retryable classification.
+- It prevents one poison message from blocking a queue or partition forever.
+- A DLQ must have alerts, ownership, replay/discard tooling, and root-cause workflow; otherwise it becomes delayed data loss.
 
 ### How should retry handling be designed?
 
-Classify errors, cap attempts, use backoff with jitter, limit concurrency, preserve attempt metadata, and route exhausted messages to DLQ. Avoid immediate infinite retries. In Kafka, retry topics can prevent partition blockage but may break ordering. In RabbitMQ, TTL/DLX retry loops must avoid synchronized release storms and poison-message hot loops.
+- Classify errors, cap attempts, use backoff with jitter, limit concurrency, preserve attempt metadata, and route exhausted messages to DLQ.
+- Avoid immediate infinite retries.
+- In Kafka, retry topics can prevent partition blockage but may break ordering.
+- In RabbitMQ, TTL/DLX retry loops must avoid synchronized release storms and poison-message hot loops.
 
 ### What is eventual consistency in event-driven systems?
 
-It means services commit local state at different times and converge through events, retries, and reconciliation rather than one global transaction. The engineering requirement is not accepting inconsistency vaguely; it is defining source of truth, event versions, idempotent consumers, pending/failed states, repair jobs, and user-visible semantics while async work is incomplete.
+- It means services commit local state at different times and converge through events, retries, and reconciliation rather than one global transaction.
+- The engineering requirement is not accepting inconsistency vaguely; it is defining source of truth, event versions, idempotent consumers, pending/failed states, repair jobs, and user-visible semantics while async work is incomplete.
 
 ### What is the outbox pattern?
 
-The outbox pattern writes business state and an event record in the same local database transaction, then publishes the event asynchronously to the broker. It removes the database/broker dual-write loss window but still allows duplicate publishes, so consumers need idempotency. It is the default pattern when a service must publish facts reliably after committing its own state.
+- The outbox pattern writes business state and an event record in the same local database transaction, then publishes the event asynchronously to the broker.
+- It removes the database/broker dual-write loss window but still allows duplicate publishes, so consumers need idempotency.
+- It is the default pattern when a service must publish facts reliably after committing its own state.
 
 ### How do you monitor Kafka in production?
 
-Monitor lag and lag age by group/topic/partition, produce and consume rates, processing latency, commit latency, rebalance frequency, producer retries/errors, under-replicated and offline partitions, ISR churn, broker disk, request latency, and controller/quorum health. Application metrics must identify the handler, event type, partition, offset, key, attempt count, and downstream dependency latency.
+- Monitor lag and lag age by group/topic/partition, produce and consume rates, processing latency, commit latency, rebalance frequency, producer retries/errors, under-replicated and offline partitions, ISR churn, broker disk, request latency, and controller/quorum health.
+- Application metrics must identify the handler, event type, partition, offset, key, attempt count, and downstream dependency latency.
 
 ### What is consumer lag and why does it matter?
 
-Lag is the distance between produced records and consumer progress for a group. It is unfinished work and stale state. Count alone is insufficient: partition distribution, oldest record age, catch-up rate, and business SLA decide severity. Lag can indicate insufficient consumers, hot partitions, slow downstream systems, poison messages, retry storms, or rebalance instability.
+- Lag is the distance between produced records and consumer progress for a group.
+- It is unfinished work and stale state.
+- Count alone is insufficient: partition distribution, oldest record age, catch-up rate, and business SLA decide severity.
+- Lag can indicate insufficient consumers, hot partitions, slow downstream systems, poison messages, retry storms, or rebalance instability.
