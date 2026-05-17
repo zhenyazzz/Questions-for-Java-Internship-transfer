@@ -16,7 +16,225 @@ Messages are not function calls. They are durable or semi-durable records whose 
 
 ### Delivery Guarantees
 
-Delivery guarantees are mostly about the relative timing of side effects and progress markers. If progress is marked before processing, failure loses work. If progress is marked after processing, failure duplicates work. If retries are enabled at producer, broker, and consumer layers simultaneously, the same logical event may be duplicated by several mechanisms. “Exactly once” is not a property of a business workflow unless every side effect participates in the same atomic protocol or is idempotent behind a stable operation key.
+### Delivery Guarantees
+
+Delivery guarantees define what can happen to a message during failures, retries, consumer crashes, broker outages, and offset/acknowledgement timing.
+
+The core problem is that message processing and progress acknowledgement are separate operations and are not atomic by default.
+
+Typical flow:
+
+1. Consumer receives a message.
+2. Consumer processes business logic.
+3. Consumer commits offset or sends acknowledgement.
+
+If failure happens between these steps, the system may lose or duplicate work depending on commit timing and retry behavior.
+
+---
+
+### At-most-once
+
+Message is considered processed before business processing completes.
+
+Typical flow:
+
+1. Consumer receives message.
+2. Consumer commits offset or acknowledges immediately.
+3. Business logic executes.
+
+If the consumer crashes after commit but before processing finishes, the message is lost permanently.
+
+Configuration characteristics:
+
+* offset commit happens before processing;
+* auto-commit is often enabled;
+* retries are usually disabled or limited.
+
+Guarantees:
+
+* no duplicate delivery;
+* messages may be lost.
+
+Tradeoff:
+
+* lowest latency and simplest flow;
+* unsafe for critical business operations.
+
+Typical usage:
+
+* metrics;
+* analytics;
+* non-critical logs.
+
+---
+
+### At-least-once
+
+Message is acknowledged only after successful processing.
+
+Typical flow:
+
+1. Consumer receives message.
+2. Business logic executes.
+3. Offset commit or acknowledgement happens after success.
+
+If the consumer crashes after processing but before commit, the broker redelivers the message.
+
+Configuration characteristics:
+
+* manual acknowledgements or manual offset commits;
+* retries enabled;
+* commit after successful processing.
+
+Guarantees:
+
+* messages should not be lost;
+* duplicate delivery is possible and expected.
+
+Tradeoff:
+
+* safest common production model;
+* requires idempotent consumers.
+
+Typical production setup:
+
+* retry topics or retry queues;
+* DLQ after max attempts;
+* idempotency keys;
+* unique constraints;
+* processed-event tracking.
+
+Typical usage:
+
+* payments;
+* orders;
+* inventory updates;
+* email/event processing.
+
+---
+
+### Exactly-once
+
+Exactly-once means the system attempts to prevent duplicate processing effects within a limited scope.
+
+In Kafka, this is achieved through:
+
+* idempotent producers;
+* Kafka transactions;
+* atomic offset commit with produced records.
+
+Typical flow:
+
+1. Consumer reads records.
+2. Processing happens.
+3. Produced Kafka records and offset commits happen in one transaction.
+
+Configuration characteristics:
+
+* `enable.idempotence=true`;
+* transactional producer enabled;
+* transactional.id configured;
+* read_committed isolation for consumers.
+
+Guarantees:
+
+* Kafka-to-Kafka processing can avoid duplicates;
+* offsets and produced records are committed atomically.
+
+Important limitation:
+Exactly-once does NOT automatically protect:
+
+* database writes;
+* REST calls;
+* payment providers;
+* emails;
+* external side effects.
+
+If the service writes to a database and then crashes before transaction coordination completes, duplicate business effects may still happen.
+
+Because of this, business-level exactly-once usually still requires:
+
+* idempotency keys;
+* unique business operation IDs;
+* transactional outbox;
+* deduplication logic.
+
+---
+
+### Producer-side retries
+
+Producers may retry when:
+
+* timeout occurs;
+* acknowledgement is delayed;
+* network connection fails.
+
+The broker may already have stored the message before the retry occurs.
+
+Without idempotent producers, retries can create duplicate records.
+
+Kafka reliability settings:
+
+* `acks=0` → fastest, weakest durability;
+* `acks=1` → leader acknowledges;
+* `acks=all` → all in-sync replicas acknowledge.
+
+Higher durability usually increases latency.
+
+---
+
+### Consumer-side retries
+
+Consumers retry when:
+
+* business processing fails;
+* downstream dependency is unavailable;
+* database/network timeout occurs.
+
+Common production patterns:
+
+* immediate retry;
+* exponential backoff;
+* retry topics/queues;
+* DLQ after max attempts.
+
+Bad retry design causes:
+
+* retry storms;
+* duplicated side effects;
+* partition blocking;
+* queue backlog growth.
+
+---
+
+### Offset Commit Timing
+
+Offset timing determines delivery semantics.
+
+Commit before processing:
+
+* at-most-once;
+* possible message loss.
+
+Commit after processing:
+
+* at-least-once;
+* possible duplicate processing.
+
+This is one of the most important concepts in distributed messaging systems.
+
+---
+
+### Real Production Mental Model
+
+Exactly-once is not a property of a business workflow unless:
+
+* every side effect participates in the same atomic transaction;
+  or
+* all side effects are idempotent.
+
+In real distributed systems, at-least-once + idempotency is the dominant production approach because true distributed atomicity across brokers, databases, and external APIs is usually impractical.
+
 
 ### Backpressure
 
