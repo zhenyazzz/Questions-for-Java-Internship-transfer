@@ -132,11 +132,13 @@ A Kafka consumer Deployment scales to 30 replicas for a 12-partition topic and t
 
 ### 162. What is container orchestration?
 
-Container orchestration is control-loop management of container workloads across machines: scheduling, restart, rollout, service discovery, configuration injection, resource enforcement, and failure recovery. In production, the important detail is reconciliation: operators submit desired state, and controllers/kubelets continuously converge actual state under partial failure.
+Container orchestration is a system that continuously manages and reconciles the desired state of containerized workloads across a cluster by handling scheduling, scaling, networking, rollouts, and self-healing automatically.
 
 ### 163. What production capabilities does Kubernetes provide?
 
-Kubernetes provides a consistent deployment and runtime control plane for stateless services: desired-state reconciliation, rolling updates, Service discovery, endpoint health gating, resource isolation, autoscaling hooks, secret/config distribution, and workload rescheduling after node failure. It does not provide application correctness, database safety, zero downtime, or sensible resource settings automatically.
+Kubernetes provides production capabilities for running containerized workloads at scale, including desired-state reconciliation, automated scheduling, service discovery, rolling updates, self-healing, autoscaling, configuration and secret management, resource isolation, and workload rescheduling after failures.
+
+However, Kubernetes does not automatically guarantee application correctness, database consistency, zero downtime, or proper production configuration.
 
 ### 164. What is a Pod in Kubernetes?
 
@@ -144,47 +146,117 @@ A Pod is the smallest scheduled workload unit: one or more containers sharing ne
 
 ### 165. What is a Node? What is the difference between control-plane and worker nodes?
 
-A node is a cluster machine. Control-plane nodes run API server, scheduler, controller manager, and etcd or connect to managed equivalents. Worker nodes run kubelet, container runtime, CNI components, kube-proxy or replacement data plane, and application Pods. Backend incidents usually involve worker-node conditions, kubelet/runtime failures, CNI issues, image pulls, disk pressure, or scheduling constraints.
+A Node is a machine in a Kubernetes cluster that provides CPU, memory, network, and storage resources for running cluster components and workloads.
+
+Control-plane nodes manage the cluster itself: API Server, Scheduler, Controller Manager, and etcd.
+
+Worker nodes run application workloads: kubelet, container runtime, networking components, and application Pods.
+
+The difference:
+
+Control-plane nodes make decisions and manage cluster state.
+Worker nodes execute containers and handle application traffic.
 
 ### 166. What is a Service and how does Service discovery work?
 
-A Service is a stable virtual destination backed by dynamic endpoints selected from ready Pods. DNS resolves the Service name to a ClusterIP, and node-local routing sends traffic to an EndpointSlice backend. Readiness affects endpoint membership; labels affect selection; kube-proxy/CNI affects delivery. A Service object without ready endpoints is only a name and virtual IP.
+A Service is a stable network endpoint in Kubernetes that provides access to a dynamic set of Pods.
+
+Service discovery works through internal cluster DNS:
+
+Pods access other services using the Service name.
+DNS resolves the name to the Service virtual IP (ClusterIP).
+Kubernetes routes traffic from the Service to one of the matching healthy Pods.
+
+The main purpose of a Service is to provide stable networking and load balancing for Pods, because Pod IPs are ephemeral and can change.
 
 ### 167. What are Pod controllers? Deployment vs StatefulSet?
 
-Pod controllers reconcile higher-level workload intent into Pods. A Deployment manages replaceable replicas through ReplicaSets and is the default for stateless services. A StatefulSet provides stable identity, ordered operations, and stable PVC association for workloads that need identity or storage continuity. StatefulSet mechanics do not solve database replication, backups, or failover.
+Pod controllers are Kubernetes objects that manage Pods and keep the desired number and state of Pods running.
+
+Deployment is used for stateless applications with replaceable Pods and supports scaling and rolling updates.
+
+StatefulSet is used for stateful applications that require stable Pod identity, persistent storage, and ordered startup/shutdown.
+
+The main difference:
+
+Deployment Pods are interchangeable.
+StatefulSet Pods have stable identity and storage association.
 
 ### 168. What are PersistentVolume and PersistentVolumeClaim?
 
-A PersistentVolume is cluster storage capacity; a PersistentVolumeClaim is a workload request for that capacity. Binding connects the claim to storage, and Pods mount the claim. Persistence means bytes can outlive a Pod, not that the application has backup, replication, consistency, or safe failover.
+A PersistentVolume (PV) is storage resource available in the Kubernetes cluster.
+
+A PersistentVolumeClaim (PVC) is a request for storage made by an application or Pod.
+
+Kubernetes binds a PVC to a matching PV, and Pods use the claim to access persistent storage.
 
 ### 169. What is StorageClass?
 
-A StorageClass defines how dynamic volumes are provisioned: provider, disk type, topology, reclaim policy, binding mode, expansion, and performance characteristics. It is an infrastructure contract. Wrong binding mode can place volumes in unusable zones; wrong reclaim policy can delete data or leak disks; wrong performance tier can turn storage latency into application latency.
+A StorageClass defines how Kubernetes dynamically creates persistent storage.
+
+It specifies storage parameters such as:
+
+storage provider
+disk type
+performance tier
+reclaim policy
+volume binding behavior
+
+When a Pod creates a PVC, Kubernetes uses the StorageClass to provision the required volume automatically.
 
 ### 170. What are ConfigMap and Secret?
 
-ConfigMaps carry non-sensitive configuration; Secrets carry sensitive values but require encryption, RBAC discipline, and leak prevention. Environment-based values require Pod restart to change. Mounted values may update but application reload is not guaranteed. Config and secret changes should be versioned and rolled out deliberately.
+ConfigMap stores non-sensitive application configuration such as URLs, ports, or feature flags.
+
+Secret stores sensitive data such as passwords, API keys, or tokens.
+
+Both can be injected into Pods as environment variables or mounted files. The main difference is that Secrets are intended for confidential data and support additional security controls.
 
 ### 171. What is Horizontal Pod Autoscaler?
 
-HPA adjusts replica count from metrics such as CPU, memory, or custom signals. It reacts after metrics change and is constrained by startup time, readiness, downstream capacity, and max replicas. It cannot fix database locks, exhausted connection pools, Kafka partition limits, bad queries, memory leaks, or dependency outages. Bad HPA signals create oscillation or amplify incidents.
+Horizontal Pod Autoscaler (HPA) automatically scales the number of Pod replicas based on metrics such as CPU, memory, or custom application metrics.
+
+When resource usage increases, HPA creates more Pods. When usage decreases, it removes excess replicas.
 
 ### 172. What are probes? What happens when liveness or readiness fails?
 
-Startup probes suppress liveness until startup completes. Readiness controls Service endpoints; failure removes the Pod from traffic without restart. Liveness restarts the container after repeated failure. Liveness should detect unrecoverable process failure, not dependency outages. Readiness should reflect serving ability and should fail during graceful shutdown before the process exits.
+Probes are Kubernetes health checks used to determine container state and availability.
+
+Readiness probe checks whether the container is ready to receive traffic.
+Liveness probe checks whether the container is still alive and functioning correctly.
+Startup probe checks whether the application has finished starting.
+
+If readiness fails, the Pod is removed from Service traffic.
+
+If liveness fails, Kubernetes restarts the container.
 
 ### 173. What is a Helm chart?
 
-A Helm chart packages parameterized Kubernetes manifests and release metadata. It standardizes installation and upgrades, but rendered YAML still controls runtime behavior. Helm cannot make a broken readiness probe, unsafe migration, overbroad RBAC, or stateful system operationally safe. Always inspect rendered manifests and diff upgrades.
+A Helm chart is a package of templated Kubernetes manifests used to install, configure, and manage applications in Kubernetes.
+
+It allows defining reusable and configurable deployments using templates and values files.
 
 ### 174. What deployment strategies matter in Kubernetes?
 
-Rolling update replaces Pods gradually according to surge/unavailable constraints and readiness. Blue/green switches traffic between full environments. Canary sends limited traffic to a new version and promotes based on metrics. The hard parts are schema compatibility, readiness accuracy, capacity during overlap, rollback limits, and whether the workload is HTTP-routable or a queue/broker consumer.
+The main Kubernetes deployment strategies are:
+
+Rolling Update — gradually replaces old Pods with new ones without full downtime.
+Blue/Green — runs two separate environments and switches traffic from the old version to the new one.
+Canary — sends a small percentage of traffic to the new version first, then gradually increases traffic if the version is stable.
+
+Rolling Update is the default strategy in Kubernetes. Blue/Green provides safer rollback. Canary is used for controlled production testing and risk reduction.
 
 ### 175. What is CD? Delivery vs Deployment?
 
-Continuous Delivery keeps software always releasable through automated build, test, package, and deploy-to-nonprod or gated production flow. Continuous Deployment automatically promotes successful changes to production. In Kubernetes, CD must validate rendered manifests, image provenance, rollout health, migrations, config changes, and post-deploy service behavior.
+Continuous Delivery is a practice where software is automatically built, tested, and prepared for release, but production deployment usually requires manual approval.
+
+Continuous Deployment automatically deploys every successful change directly to production without manual intervention.
+
+The difference:
+
+* Continuous Delivery → production release is manual.
+* Continuous Deployment → production release is automatic.
+
 
 ### How would you monitor a Java service running in Kubernetes?
 
