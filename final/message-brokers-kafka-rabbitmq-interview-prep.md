@@ -8,6 +8,26 @@ Messaging is a reliability boundary, not a reliability guarantee. A broker remov
 
 A production message path has at least four independently failing steps: the producer's local state change, the broker append/enqueue, consumer side effects, and consumer progress acknowledgement. No ordinary broker makes those four steps one atomic transaction across databases, APIs, email providers, and payment gateways. Timeouts are ambiguous. A send may have been accepted before the client lost the response. A consumer may have updated the database and crashed before acking. A rebalance may revoke a partition while work is still running. At-least-once systems therefore converge toward idempotency keys, transactional outbox, bounded retries, dead-letter isolation, schema compatibility, and observability around backlog age rather than just message count.
 
+## Table of Contents
+
+- [Broker Semantics at Runtime](#broker-semantics-at-runtime)
+- [Kafka Runtime Model](#kafka-runtime-model)
+- [Producers, Replication, ISR, and Leader Election](#producers-replication-isr-and-leader-election)
+- [Consumer Groups and Rebalancing](#consumer-groups-and-rebalancing)
+- [Offset and Ack Timing](#offset-and-ack-timing)
+- [Retention, Replay, and Compaction](#retention-replay-and-compaction)
+- [RabbitMQ Runtime Model](#rabbitmq-runtime-model)
+- [RabbitMQ DLQ, Retries, and Poison Messages](#rabbitmq-dlq-retries-and-poison-messages)
+- [Kafka vs RabbitMQ in System Design](#kafka-vs-rabbitmq-in-system-design)
+- [Event-Driven Consistency and the Outbox Boundary](#event-driven-consistency-and-the-outbox-boundary)
+- [Idempotency, Duplicates, and Exactly-Once Misconceptions](#idempotency-duplicates-and-exactly-once-misconceptions)
+- [Retry Architecture and Failure Containment](#retry-architecture-and-failure-containment)
+- [Observability and Operations](#observability-and-operations)
+- [Common Failure Patterns](#common-failure-patterns)
+- [Message Brokers Interview Q&A](#message-brokers-interview-qa)
+
+---
+
 ## Broker Semantics at Runtime
 
 ### Messages vs Function Calls
@@ -46,25 +66,25 @@ If the consumer crashes after commit but before processing finishes, the message
 
 Configuration characteristics:
 
-* offset commit happens before processing;
-* auto-commit is often enabled;
-* retries are usually disabled or limited.
+- offset commit happens before processing;
+- auto-commit is often enabled;
+- retries are usually disabled or limited.
 
 Guarantees:
 
-* no duplicate delivery;
-* messages may be lost.
+- no duplicate delivery;
+- messages may be lost.
 
 Tradeoff:
 
-* lowest latency and simplest flow;
-* unsafe for critical business operations.
+- lowest latency and simplest flow;
+- unsafe for critical business operations.
 
 Typical usage:
 
-* metrics;
-* analytics;
-* non-critical logs.
+- metrics;
+- analytics;
+- non-critical logs.
 
 ---
 
@@ -82,34 +102,34 @@ If the consumer crashes after processing but before commit, the broker redeliver
 
 Configuration characteristics:
 
-* manual acknowledgements or manual offset commits;
-* retries enabled;
-* commit after successful processing.
+- manual acknowledgements or manual offset commits;
+- retries enabled;
+- commit after successful processing.
 
 Guarantees:
 
-* messages should not be lost;
-* duplicate delivery is possible and expected.
+- messages should not be lost;
+- duplicate delivery is possible and expected.
 
 Tradeoff:
 
-* safest common production model;
-* requires idempotent consumers.
+- safest common production model;
+- requires idempotent consumers.
 
 Typical production setup:
 
-* retry topics or retry queues;
-* DLQ after max attempts;
-* idempotency keys;
-* unique constraints;
-* processed-event tracking.
+- retry topics or retry queues;
+- DLQ after max attempts;
+- idempotency keys;
+- unique constraints;
+- processed-event tracking.
 
 Typical usage:
 
-* payments;
-* orders;
-* inventory updates;
-* email/event processing.
+- payments;
+- orders;
+- inventory updates;
+- email/event processing.
 
 ---
 
@@ -119,9 +139,9 @@ Exactly-once means the system attempts to prevent duplicate processing effects w
 
 In Kafka, this is achieved through:
 
-* idempotent producers;
-* Kafka transactions;
-* atomic offset commit with produced records.
+- idempotent producers;
+- Kafka transactions;
+- atomic offset commit with produced records.
 
 Typical flow:
 
@@ -131,33 +151,33 @@ Typical flow:
 
 Configuration characteristics:
 
-* `enable.idempotence=true`;
-* transactional producer enabled;
-* transactional.id configured;
-* read_committed isolation for consumers.
+- `enable.idempotence=true`;
+- transactional producer enabled;
+- transactional.id configured;
+- read_committed isolation for consumers.
 
 Guarantees:
 
-* Kafka-to-Kafka processing can avoid duplicates;
-* offsets and produced records are committed atomically.
+- Kafka-to-Kafka processing can avoid duplicates;
+- offsets and produced records are committed atomically.
 
 Important limitation:
 Exactly-once does NOT automatically protect:
 
-* database writes;
-* REST calls;
-* payment providers;
-* emails;
-* external side effects.
+- database writes;
+- REST calls;
+- payment providers;
+- emails;
+- external side effects.
 
 If the service writes to a database and then crashes before transaction coordination completes, duplicate business effects may still happen.
 
 Because of this, business-level exactly-once usually still requires:
 
-* idempotency keys;
-* unique business operation IDs;
-* transactional outbox;
-* deduplication logic.
+- idempotency keys;
+- unique business operation IDs;
+- transactional outbox;
+- deduplication logic.
 
 ---
 
@@ -165,9 +185,9 @@ Because of this, business-level exactly-once usually still requires:
 
 Producers may retry when:
 
-* timeout occurs;
-* acknowledgement is delayed;
-* network connection fails.
+- timeout occurs;
+- acknowledgement is delayed;
+- network connection fails.
 
 The broker may already have stored the message before the retry occurs.
 
@@ -175,9 +195,9 @@ Without idempotent producers, retries can create duplicate records.
 
 Kafka reliability settings:
 
-* `acks=0` → fastest, weakest durability;
-* `acks=1` → leader acknowledges;
-* `acks=all` → all in-sync replicas acknowledge.
+- `acks=0` → fastest, weakest durability;
+- `acks=1` → leader acknowledges;
+- `acks=all` → all in-sync replicas acknowledge.
 
 Higher durability usually increases latency.
 
@@ -187,23 +207,23 @@ Higher durability usually increases latency.
 
 Consumers retry when:
 
-* business processing fails;
-* downstream dependency is unavailable;
-* database/network timeout occurs.
+- business processing fails;
+- downstream dependency is unavailable;
+- database/network timeout occurs.
 
 Common production patterns:
 
-* immediate retry;
-* exponential backoff;
-* retry topics/queues;
-* DLQ after max attempts.
+- immediate retry;
+- exponential backoff;
+- retry topics/queues;
+- DLQ after max attempts.
 
 Bad retry design causes:
 
-* retry storms;
-* duplicated side effects;
-* partition blocking;
-* queue backlog growth.
+- retry storms;
+- duplicated side effects;
+- partition blocking;
+- queue backlog growth.
 
 ---
 
@@ -213,13 +233,13 @@ Offset timing determines delivery semantics.
 
 Commit before processing:
 
-* at-most-once;
-* possible message loss.
+- at-most-once;
+- possible message loss.
 
 Commit after processing:
 
-* at-least-once;
-* possible duplicate processing.
+- at-least-once;
+- possible duplicate processing.
 
 This is one of the most important concepts in distributed messaging systems.
 
@@ -229,12 +249,11 @@ This is one of the most important concepts in distributed messaging systems.
 
 Exactly-once is not a property of a business workflow unless:
 
-* every side effect participates in the same atomic transaction;
+- every side effect participates in the same atomic transaction;
   or
-* all side effects are idempotent.
+- all side effects are idempotent.
 
 In real distributed systems, at-least-once + idempotency is the dominant production approach because true distributed atomicity across brokers, databases, and external APIs is usually impractical.
-
 
 ### Backpressure
 
