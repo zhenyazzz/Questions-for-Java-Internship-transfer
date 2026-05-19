@@ -6,9 +6,9 @@
 
 ## Module summary (middle+ — how I’d frame it on interview)
 
-<a id="summary"></a>
 
-**Caching** is a **latency and cost** tool: you trade **freshness and complexity** for fewer reads on the primary store (DB, remote API) and faster responses. The interview spine is four buckets—**where** you cache (browser, CDN, reverse proxy, app in-process, distributed Redis), **how** you populate (**cache-aside**, **read-through**, **write-through**, **write-behind**), **how** you invalidate (**TTL**, **event-driven**, **version keys**), and **how** you evict when memory is full (**LRU/LFU/TTL**, Redis `volatile-*` / `allkeys-*` policies). Middle+ means saying **which inconsistency window** you accept and **what breaks** under **double writes** or **thundering herd**.
+
+**Caching** is a **latency and cost** tool: you trade **freshness and complexity** for fewer reads on the primary store (DB, remote API) and faster responses. The interview spine is four buckets—**where** you cache (browser, CDN, reverse proxy, app in-process, distributed Redis), **how** you populate (**cache-aside**, **read-through**, **write-through**, **write-behind**), **how** you invalidate (**TTL**, **event-driven**, **version keys**), and **how** you evict when memory is full (**LRU/LFU/TTL**, Redis `volatile-`* / `allkeys-*` policies). Middle+ means saying **which inconsistency window** you accept and **what breaks** under **double writes** or **thundering herd**.
 
 **System design** in this module is mostly **architectural styles and patterns**, not drawing boxes for Netflix: **monolith vs microservices**, **sync vs async** communication, **distributed transactions** (why 2PC hurts, what **Saga / outbox / idempotency** buy you), and **cross-cutting patterns**—**API Gateway**, **BFF**, **service registry**, **sidecar**, **circuit breaker**, **CQRS**, **ACL**, **strangler**, **DDD**, and **database per service**. I tie answers to **operational reality**: deployability, blast radius, consistency, observability.
 
@@ -16,69 +16,74 @@
 
 ### Quick map (question → one line)
 
-| # | Topic | One-line takeaway |
-|---|--------|-------------------|
-| **110** | What is caching? | Copy of data closer to consumer to cut latency/cost; always a consistency trade-off. |
-| **111** | Caching strategies | Cache-aside, read-through, write-through, write-behind—who writes cache and when. |
-| **112** | Invalidation | TTL, explicit delete, event/pub-sub, version keys—hard problem, pick per domain. |
-| **113** | Displacement / eviction | When cache is full: LRU/LFU/TTL/random; Redis `maxmemory-policy`. |
-| **114** | Architecture styles | Monolith, layered, SOA, microservices, event-driven—different decomposition axes. |
+
+| #       | Topic                       | One-line takeaway                                                                        |
+| ------- | --------------------------- | ---------------------------------------------------------------------------------------- |
+| **110** | What is caching?            | Copy of data closer to consumer to cut latency/cost; always a consistency trade-off.     |
+| **111** | Caching strategies          | Cache-aside, read-through, write-through, write-behind—who writes cache and when.        |
+| **112** | Invalidation                | TTL, explicit delete, event/pub-sub, version keys—hard problem, pick per domain.         |
+| **113** | Displacement / eviction     | When cache is full: LRU/LFU/TTL/random; Redis `maxmemory-policy`.                        |
+| **114** | Architecture styles         | Monolith, layered, SOA, microservices, event-driven—different decomposition axes.        |
 | **115** | Monolith first historically | Simpler hardware/tooling; single process deployment before distributed systems maturity. |
-| **116** | Monolith pros/cons | Simple dev/deploy/refactor vs scaling limits and coupling blast radius. |
-| **117** | Microservices pros/cons | Independent scale/teams vs distributed complexity and consistency pain. |
-| **118** | Microservice communication | Sync HTTP/gRPC, async messaging, hybrid; timeouts and contracts matter. |
-| **119** | Distributed transactions | 2PC fragility; Saga, outbox, TCC, idempotency as pragmatic patterns. |
-| **120** | Service registry | Dynamic discovery (Eureka, Consul, K8s Services+DNS). |
-| **121** | Sidecar | Co-located helper container (Envoy, logging, mesh). |
-| **122** | Circuit breaker | Stop hammering unhealthy deps; fail fast + half-open recovery. |
-| **123** | CQRS | Split read/write models; eventual read models, complexity cost. |
-| **124** | Anticorruption layer | Translation boundary between bounded contexts / legacy models. |
-| **125** | Strangler | Incrementally replace legacy by routing traffic to new implementation. |
-| **126** | API Gateway | Single edge for auth, routing, rate limit, cross-cutting concerns. |
-| **127** | BFF | Per-client API façade shaping aggregation and UX needs. |
-| **128** | DDD | Domain-driven modeling, bounded contexts, ubiquitous language. |
-| **129** | DB per microservice | Loose coupling, independent scale/schema; avoid shared DB anti-pattern. |
-| **130** | HTTP limitations | Stateless overhead, no streaming first-class in REST, head-of-line, verbosity, etc. |
+| **116** | Monolith pros/cons          | Simple dev/deploy/refactor vs scaling limits and coupling blast radius.                  |
+| **117** | Microservices pros/cons     | Independent scale/teams vs distributed complexity and consistency pain.                  |
+| **118** | Microservice communication  | Sync HTTP/gRPC, async messaging, hybrid; timeouts and contracts matter.                  |
+| **119** | Distributed transactions    | 2PC fragility; Saga, outbox, TCC, idempotency as pragmatic patterns.                     |
+| **120** | Service registry            | Dynamic discovery (Eureka, Consul, K8s Services+DNS).                                    |
+| **121** | Sidecar                     | Co-located helper container (Envoy, logging, mesh).                                      |
+| **122** | Circuit breaker             | Stop hammering unhealthy deps; fail fast + half-open recovery.                           |
+| **123** | CQRS                        | Split read/write models; eventual read models, complexity cost.                          |
+| **124** | Anticorruption layer        | Translation boundary between bounded contexts / legacy models.                           |
+| **125** | Strangler                   | Incrementally replace legacy by routing traffic to new implementation.                   |
+| **126** | API Gateway                 | Single edge for auth, routing, rate limit, cross-cutting concerns.                       |
+| **127** | BFF                         | Per-client API façade shaping aggregation and UX needs.                                  |
+| **128** | DDD                         | Domain-driven modeling, bounded contexts, ubiquitous language.                           |
+| **129** | DB per microservice         | Loose coupling, independent scale/schema; avoid shared DB anti-pattern.                  |
+| **130** | HTTP limitations            | Stateless overhead, no streaming first-class in REST, head-of-line, verbosity, etc.      |
+
 
 ## Table of contents
 
 - [Module summary (middle+)](#summary)
 
-110. [What is Caching?](#q110)
-111. [What are caching strategies?](#q111)
-112. [What are caching invalidation strategies?](#q112)
-113. [What are cache displacement strategies?](#q113)
-114. [What architecture styles exist in system design?](#q114)
-115. [Why was monolith architecture created earlier than microservice architecture?](#q115)
-116. [What are the pros and cons of monolithic architecture?](#q116)
-117. [What are the pros and cons of microservice architecture?](#q117)
-118. [What types of communication exist between microservices?](#q118)
-119. [What is the problem of distributed transactions? What patterns help to solve this problem?](#q119)
-120. [What is the Service Registry pattern?](#q120)
-121. [What is the Sidecar pattern?](#q121)
-122. [What is the Circuit breaker pattern?](#q122)
-123. [What is the CQRS pattern?](#q123)
-124. [What is the Anticorruption layer pattern?](#q124)
-125. [What is the Strangler pattern?](#q125)
-126. [What is the API Gateway pattern?](#q126)
-127. [What is the Backend for Frontend pattern?](#q127)
-128. [What is DDD?](#q128)
-129. [Why should each microservice have its own db?](#q129)
-130. [What are the main problems of HTTP protocol?](#q130)
+1. [What is Caching?](#q110)
+2. [What are caching strategies?](#q111)
+3. [What are caching invalidation strategies?](#q112)
+4. [What are cache displacement strategies?](#q113)
+5. [What architecture styles exist in system design?](#q114)
+6. [Why was monolith architecture created earlier than microservice architecture?](#q115)
+7. [What are the pros and cons of monolithic architecture?](#q116)
+8. [What are the pros and cons of microservice architecture?](#q117)
+9. [What types of communication exist between microservices?](#q118)
+10. [What is the problem of distributed transactions? What patterns help to solve this problem?](#q119)
+11. [What is the Service Registry pattern?](#q120)
+12. [What is the Sidecar pattern?](#q121)
+13. [What is the Circuit breaker pattern?](#q122)
+14. [What is the CQRS pattern?](#q123)
+15. [What is the Anticorruption layer pattern?](#q124)
+16. [What is the Strangler pattern?](#q125)
+17. [What is the API Gateway pattern?](#q126)
+18. [What is the Backend for Frontend pattern?](#q127)
+19. [What is DDD?](#q128)
+20. [Why should each microservice have its own db?](#q129)
+21. [What are the main problems of HTTP protocol?](#q130)
 
 ---
 
-<a id="q110"></a>
+
 
 ## 110. What is Caching?
 
 ### Question Restatement
+
 What is **caching**, and why do systems use it?
 
 ### 1. Definition
+
 **Caching** means storing a **copy of data** closer to the consumer (in memory, on another machine, or at the edge) so repeated reads are **faster** and cheaper than always hitting the **source of truth** (database, remote HTTP service, file system).
 
 ### 2. What you trade away
+
 Caches introduce **staleness** and **invalidation complexity**. Strong consistency between cache and primary store is **hard**; most designs accept an **eventual** window or a **TTL** bound.
 
 ### 3. Middle+ answer (as on interview)
@@ -95,21 +100,24 @@ In practice, caching is used at different levels, such as in-memory caches, dist
 
 ---
 
-<a id="q111"></a>
+
 
 ## 111. What are caching strategies?
 
 ### Question Restatement
+
 What **caching strategies** (population / write patterns) do you know?
 
 ### 1. Common strategies
 
-| Strategy | Flow (simplified) | Typical use |
-|----------|-------------------|-------------|
-| **Cache-aside (lazy)** | App reads cache → miss → load DB → populate cache | General purpose CRUD |
-| **Read-through** | App asks cache; cache loader pulls from DB on miss | Centralized caching layer |
-| **Write-through** | Write goes to cache **and** DB synchronously | Need cache always fresh on write path |
-| **Write-behind (write-back)** | Write accepted to cache, async flush to DB | Extreme write perf; risk if cache dies |
+
+| Strategy                      | Flow (simplified)                                  | Typical use                            |
+| ----------------------------- | -------------------------------------------------- | -------------------------------------- |
+| **Cache-aside (lazy)**        | App reads cache → miss → load DB → populate cache  | General purpose CRUD                   |
+| **Read-through**              | App asks cache; cache loader pulls from DB on miss | Centralized caching layer              |
+| **Write-through**             | Write goes to cache **and** DB synchronously       | Need cache always fresh on write path  |
+| **Write-behind (write-back)** | Write accepted to cache, async flush to DB         | Extreme write perf; risk if cache dies |
+
 
 ### 2. Middle+ answer (as on interview)
 
@@ -132,14 +140,16 @@ In practice, cache-aside is the most common strategy in backend systems, especia
 
 ---
 
-<a id="q112"></a>
+
 
 ## 112. What are caching invalidation strategies?
 
 ### Question Restatement
+
 How do you **invalidate** or refresh cache entries?
 
 ### 1. Strategy families
+
 - **TTL / TTI** — time-to-live or idle expiry; simplest, bounded staleness.
 - **Explicit delete/update** — on write path, **evict** keys or **write new value**; risk if write fails halfway.
 - **Event-driven** — domain events (**Kafka**, Redis pub/sub) tell all instances to invalidate.
@@ -166,14 +176,16 @@ In practice, systems often combine strategies, for example TTL with explicit inv
 
 ---
 
-<a id="q113"></a>
+
 
 ## 113. What are cache displacement strategies?
 
 ### Question Restatement
+
 When the cache is **full**, how do you **evict** entries (**displacement** / eviction policies)?
 
 ### 1. Classic policies
+
 - **LRU** — evict least recently used (common approximation in Redis with sampling).
 - **LFU** — evict least frequently used.
 - **FIFO** — oldest inserted first (simple, not always “hotness” aware).
@@ -181,7 +193,8 @@ When the cache is **full**, how do you **evict** entries (**displacement** / evi
 - **Random** — cheap, sometimes used at scale.
 
 ### 2. Redis note
-With `maxmemory`, Redis policies include **`allkeys-lru`**, **`volatile-lru`**, **`allkeys-lfu`**, **`volatile-ttl`**, **`noeviction`** (writes fail when full—watch for errors).
+
+With `maxmemory`, Redis policies include `**allkeys-lru`**, `**volatile-lru**`, `**allkeys-lfu**`, `**volatile-ttl**`, `**noeviction**` (writes fail when full—watch for errors).
 
 ### 3. Middle+ answer (as on interview)
 
@@ -205,14 +218,16 @@ In practice, LRU or LFU are the most commonly used strategies, often combined wi
 
 ---
 
-<a id="q114"></a>
+
 
 ## 114. What architecture styles exist in system design?
 
 ### Question Restatement
+
 What **architecture styles** (high-level patterns) exist?
 
 ### 1. Speaking list
+
 - **Monolithic** — single deployable unit; modular monolith as a variant.
 - **Layered (n-tier)** — presentation / application / domain / infrastructure separation inside one deployable.
 - **Service-Oriented (SOA)** — coarse services, often ESB-centric (older enterprise default).
@@ -237,14 +252,16 @@ In practice, these styles are often combined. For example, microservices may use
 
 ---
 
-<a id="q115"></a>
+
 
 ## 115. Why was monolith architecture created earlier than microservice architecture?
 
 ### Question Restatement
+
 Historically, why did **monoliths** dominate before **microservices**?
 
 ### 1. Drivers
+
 - **Hardware and cost** — fewer machines, smaller clusters; vertical scale first.
 - **Tooling maturity** — RPC frameworks, containers, orchestration, CI/CD, tracing were weaker.
 - **Network reliability and latency** — remote calls were expensive and flaky compared to in-process calls.
@@ -269,7 +286,7 @@ In practice, microservices are not “better by default”—they introduce sign
 
 ---
 
-<a id="q116"></a>
+
 
 ## 116. What are the pros and cons of monolithic architecture?
 
@@ -293,20 +310,23 @@ In practice, monoliths are very effective in early stages, especially when desig
 
 ---
 
-<a id="q117"></a>
+
 
 ## 117. What are the pros and cons of microservice architecture?
 
 ### Question Restatement
+
 **Pros and cons** of **microservices**.
 
 ### 1. Pros
+
 - **Independent deploy and scale** per service.
 - **Team autonomy** aligned to **bounded contexts**.
 - **Fault isolation** (when boundaries are real).
 - **Polyglot** option per service (sometimes valuable).
 
 ### 2. Cons
+
 - **Distributed system complexity** — latency, partial failures, **consistency**, **debugging**.
 - **Operational overhead** — CI/CD × N, observability, service mesh, **on-call**.
 - **Data duplication** and **eventual consistency** when avoiding shared DB.
@@ -334,14 +354,16 @@ In practice, microservices provide scalability and flexibility, but they come wi
 
 ---
 
-<a id="q118"></a>
+
 
 ## 118. What types of communication exist between microservices?
 
 ### Question Restatement
+
 What **communication types** exist between services?
 
 ### 1. Axes
+
 - **Synchronous** — caller waits: **HTTP/REST**, **gRPC**, GraphQL.
 - **Asynchronous** — message **queue/topic** (Kafka, RabbitMQ), **event log**, sometimes email/webhooks.
 - **Hybrid** — sync user-facing path + async background processing.
@@ -358,17 +380,20 @@ In practice, synchronous communication is used for immediate responses, while as
 
 ---
 
-<a id="q119"></a>
+
 
 ## 119. What is the problem of distributed transactions? What patterns help to solve this problem?
 
 ### Question Restatement
+
 What goes wrong with **distributed transactions**, and which **patterns** address it?
 
 ### 1. The core problem
+
 A transaction spanning **two networks and two databases** cannot get **ACID** as cheaply as one local transaction: **partial failure**, **blocking locks**, **CAP** trade-offs, **coordinator** outages.
 
 ### 2. Classic vs pragmatic
+
 - **Two-phase commit (2PC)** — strong atomicity idea; **blocking**, fragile under partitions, not loved in cloud-native stacks.
 - **Saga** — sequence of **local transactions** + **compensating actions** (choreography or orchestration).
 - **Outbox pattern** — write business row + **outbox event** in **one DB transaction**, relay to broker reliably.
@@ -398,17 +423,20 @@ In practice, distributed transactions are avoided in favor of local ACID transac
 
 ---
 
-<a id="q120"></a>
+
 
 ## 120. What is the Service Registry pattern?
 
 ### Question Restatement
+
 What is a **service registry**, and why use it?
 
 ### 1. Definition
+
 A **service registry** stores **network locations** (host:port, metadata) of **running instances** for a logical service name. Instances **register** on startup and **deregister** on shutdown; clients **discover** dynamically instead of hardcoding IPs.
 
 ### 2. Examples
+
 **Eureka** (Spring Cloud Netflix era), **Consul**, **etcd**, **ZooKeeper** (older), **Kubernetes Service + DNS/CoreDNS** (platform-level registry abstraction).
 
 ### 3. Middle+ answer (as on interview)
@@ -432,45 +460,50 @@ In practice, the service registry provides indirection between service names and
 
 ---
 
-<a id="q121"></a>
 
-## 121. What is the Sidecar pattern?
 
-### Question Restatement
-What is the **Sidecar** pattern?
+## 1**21. What is the Sidecar pattern?**
 
-### 1. Definition
-A **sidecar** is a **co-located auxiliary process/container** deployed alongside the **main application container** in the same **Pod** (K8s) or host—sharing network namespace (often) and lifecycle, but separate binary.
+### **Question Restatement**
 
-### 2. Typical responsibilities
-**Envoy** proxy (mTLS, retries, traffic split), **logging agents** (Fluent Bit), **metrics exporters**, **vault agent** for secrets, **service mesh** data plane.
+**What is the Sidecar pattern?**
 
-### 3. Middle+ answer (as on interview)
+### **1. Definition**
 
-The Sidecar pattern means running an additional helper container alongside the main application container, typically in the same environment (e.g., Kubernetes Pod).
+**A sidecar is a co-located auxiliary process/container deployed alongside the main application container in the same Pod (K8s) or host—sharing network namespace (often) and lifecycle, but separate binary.**
 
-The sidecar handles cross-cutting concerns such as:
+### **2. Typical responsibilities**
 
-networking (proxies, retries, TLS)
+**Envoy proxy (mTLS, retries, traffic split), logging agents (Fluent Bit), metrics exporters, vault agent for secrets, service mesh data plane.**
+
+### **3. Middle+ answer (as on interview)**
+
+**The Sidecar pattern means running an additional helper container alongside the main application container, typically in the same environment (e.g., Kubernetes Pod).**
+
+**The sidecar handles cross-cutting concerns such as:**
+
+**networking (proxies, retries, TLS)
 logging and monitoring
-configuration and secrets
+configuration and secrets**
 
-This allows the main application to stay simple, while infrastructure concerns are handled externally.
+**This allows the main application to stay simple, while infrastructure concerns are handled externally.**
 
-In practice, sidecars are commonly used in service meshes, where a proxy (e.g., Envoy) manages communication, security, and observability.
+**In practice, sidecars are commonly used in service meshes, where a proxy (e.g., Envoy) manages communication, security, and observability.**
 
-The trade-off is additional resource usage and complexity, but it provides consistency and reduces duplicated logic across services.
+**The trade-off is additional resource usage and complexity, but it provides consistency and reduces duplicated logic across services.**
 
 ---
 
-<a id="q122"></a>
+
 
 ## 122. What is the Circuit breaker pattern?
 
 ### Question Restatement
+
 What is the **Circuit breaker** pattern?
 
 ### 1. States (typical)
+
 - **Closed** — calls pass through; failures are counted.
 - **Open** — fast-fail without hitting the dependency after threshold.
 - **Half-open** — trial calls to probe recovery.
@@ -493,17 +526,20 @@ In practice, circuit breakers improve system resilience, but must be combined wi
 
 ---
 
-<a id="q123"></a>
+
 
 ## 123. What is the CQRS pattern?
 
 ### Question Restatement
+
 What is **CQRS**?
 
 ### 1. Definition
+
 **Command Query Responsibility Segregation** — separate **models** (and sometimes **data stores**) for **writes (commands)** and **reads (queries)**. Reads may use **denormalized projections** optimized for UI/reporting.
 
 ### 2. Trade-offs
+
 **Pros:** scale reads independently, **shape data per query**, offload heavy reporting. **Cons:** **eventual consistency**, **complexity**, duplicate logic, risk of **projection bugs**.
 
 ### 3. Middle+ answer (as on interview)
@@ -523,14 +559,16 @@ In practice, CQRS is useful when read and write workloads differ significantly, 
 
 ---
 
-<a id="q124"></a>
+
 
 ## 124. What is the Anticorruption layer pattern?
 
 ### Question Restatement
+
 What is the **Anticorruption Layer (ACL)**?
 
 ### 1. Definition (DDD)
+
 An **ACL** is a **translation boundary** between your **bounded context** and a **foreign model** (legacy system, partner API, messy schema) so their terminology and invariants **do not leak** into your core domain.
 
 ### 2. Middle+ answer (as on interview)
@@ -550,14 +588,16 @@ The goal is to keep your domain clean and decoupled, even when integrating with 
 
 ---
 
-<a id="q125"></a>
+
 
 ## 125. What is the Strangler pattern?
 
 ### Question Restatement
+
 What is the **Strangler Fig** pattern?
 
 ### 1. Definition
+
 Incrementally **replace** a legacy system by placing a **router/proxy/gateway** in front that routes **some traffic** to the **new implementation** while the rest still hits legacy—**growing** the new slice until legacy can be **retired**.
 
 ### 2. Middle+ answer (as on interview)
@@ -572,17 +612,20 @@ This approach reduces risk, allows incremental delivery, and provides an easy ro
 
 ---
 
-<a id="q126"></a>
+
 
 ## 126. What is the API Gateway pattern?
 
 ### Question Restatement
+
 What is an **API Gateway**?
 
 ### 1. Responsibilities (typical)
+
 **Single entry** for clients: **authentication**, **rate limiting**, **routing**, **SSL termination**, **request shaping**, **API composition** (light), **caching**, **A/B** routing.
 
 ### 2. Products / implementations
+
 Kong, AWS API Gateway, Spring Cloud Gateway, Envoy + control plane, NGINX.
 
 ### 3. Middle+ answer (as on interview)
@@ -602,14 +645,16 @@ In practice, an API Gateway improves security and simplifies client interaction,
 
 ---
 
-<a id="q127"></a>
+
 
 ## 127. What is the Backend for Frontend (BFF) pattern?
 
 ### Question Restatement
+
 What is **BFF**?
 
 ### 1. Definition
+
 A **BFF** is a **backend tailored to a specific client type** (iOS BFF, Web BFF) that **aggregates** domain APIs, **shapes** payloads for UI needs, and hides **chattiness** from the device.
 
 ### 2. Middle+ answer (as on interview)
@@ -630,14 +675,16 @@ The trade-off is increased system complexity and potential duplication of logic 
 
 ---
 
-<a id="q128"></a>
+
 
 ## 128. What is DDD?
 
 ### Question Restatement
+
 What is **Domain-Driven Design (DDD)**?
 
 ### 1. Core ideas
+
 - **Ubiquitous language** — code names match business language.
 - **Bounded context** — model consistency boundary; explicit **context maps** between contexts.
 - **Aggregates** — consistency cluster rooted at an **aggregate root**.
@@ -661,14 +708,16 @@ In practice, DDD is most useful for complex domains, while simple applications m
 
 ---
 
-<a id="q129"></a>
+
 
 ## 129. Why should each microservice have its own db?
 
 ### Question Restatement
+
 Why **database per service**?
 
 ### 1. Reasons
+
 - **Loose coupling** — no hidden joins across teams.
 - **Independent schema evolution** — migrations do not block other services.
 - **Independent scaling** — different storage engines/SKUs per workload.
@@ -676,6 +725,7 @@ Why **database per service**?
 - **Polyglot persistence** — Redis for one, Postgres for another.
 
 ### 2. Trade-off
+
 **Distributed queries** become **orchestration**, **eventual consistency**, **data duplication**—that is intentional.
 
 ### 3. Middle+ answer (as on interview)
@@ -700,14 +750,16 @@ In practice, database per service enforces proper boundaries and autonomy, which
 
 ---
 
-<a id="q130"></a>
+
 
 ## 130. What are the main problems of HTTP protocol?
 
 ### Question Restatement
+
 What are **HTTP’s limitations** (especially for large-scale / internal systems)?
 
 ### 1. Common talking points
+
 - **Request/response bias** — no first-class bidirectional streaming in classic REST (WebSockets/gRPC layered separately).
 - **Overhead** — textual headers (mitigated by **HTTP/2 HPACK**, **HTTP/3 QPACK**).
 - **Head-of-line blocking** (HTTP/1.1 keep-alive with many objects; **HTTP/2** multiplexes but has TCP-level HoL; **HTTP/3** over QUIC improves).
@@ -732,3 +784,4 @@ In practice, these limitations lead systems to use alternatives like gRPC for ef
 HTTP is not bad, but it is not always the best choice for internal high-load communication.
 
 ---
+
