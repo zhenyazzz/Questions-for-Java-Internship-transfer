@@ -1,190 +1,168 @@
-# Docker Under the Hood: Interview-Ready Deep Explanation
+# Docker изнутри: подробное объяснение для собеседования
 
-> **Purpose of this material:** give you a narrative you can confidently explain at an interview, from disk structures to kernel behavior, without vague phrases or “it just works”.
-
----
-
-## 1) The Core Idea You Should Say First at an Interview
-
-If an interviewer asks, “What is Docker under the hood?”, the strongest concise opening is:
-
-**Docker is a packaging and runtime system for Linux processes.**
-
-A container is not a separate machine and not a separate kernel. It is a normal process started with controlled isolation boundaries and a specially assembled root filesystem.
-
-In practical terms, three Linux mechanisms are central:
-
-- **Namespaces** define what the process can *see*.
-- **cgroups** define what the process can *consume*.
-- **OverlayFS** defines what the process can *read/write* in its root filesystem.
-
-A good analogy for interviews:
-
-- **Image** = architectural blueprint + immutable material list.
-- **Container** = one active construction site created from that blueprint.
-
-You can repeat this model multiple times during the conversation because it is both technically accurate and easy to remember.
+> **Цель материала:** дать точные и понятные формулировки, которые можно уверенно объяснять на собеседовании: от структуры на диске до поведения ядра Linux во время запуска контейнера.
 
 ---
 
-## 2) Docker Layers: Physical Reality on Disk, Not an Abstraction
+## 1) Базовая формулировка: что такое Docker под капотом
 
-A Docker layer corresponds to concrete filesystem data.
+Правильная короткая формулировка:
 
-On Linux hosts using Docker’s `overlay2` storage driver, layer-related data is typically stored under:
+**Docker — это система упаковки и запуска Linux-процессов.**
+
+Контейнер не является отдельной виртуальной машиной и не запускает отдельное ядро. Контейнер — это обычный процесс Linux, который запускается с ограничениями и изоляцией на уровне ядра.
+
+Три ключевых механизма:
+
+- **Namespaces** — определяют, что процесс *видит*.
+- **cgroups** — определяют, что процесс *может потреблять*.
+- **OverlayFS** — определяет, какую корневую файловую систему процесс *читает и изменяет*.
+
+Удобная аналогия:
+
+- **Image** = чертеж + зафиксированный набор материалов.
+- **Container** = живой экземпляр, созданный по этому чертежу.
+
+---
+
+## 2) Docker Layers: физическая сущность на диске
+
+Docker layer — это не абстракция, а реальные данные на файловой системе хоста.
+
+На Linux-хосте с драйвером хранения Docker `overlay2` данные слоев обычно лежат в:
 
 - **`/var/lib/docker/overlay2/`**
 
-Inside that storage area, Docker keeps directories and metadata that represent filesystem deltas and parent relationships. Conceptually, each layer is a “difference package” relative to its parent. That difference package contains only what changed at that step.
+Внутри встречаются служебные директории и файлы, описывающие дельты и связи между слоями.
 
-When you describe layer anatomy, explain it as follows:
+Основные элементы:
 
-- `diff/` contains changed or added files for that layer delta.
-- `lower` points to parent lower layers.
-- `merged/` is the unified view used by a running container.
-- `work/` is required by OverlayFS internals.
+- `diff/` — файлы, которые были добавлены или изменены в этом слое.
+- `lower` — ссылка на цепочку нижележащих (родительских) слоев.
+- `merged/` — объединенный вид файловой системы для запущенного контейнера.
+- `work/` — служебная рабочая директория OverlayFS.
 
-The key interview message:
+Ключевая мысль:
 
-**A layer is not just a line in Docker history; it is represented by real on-disk objects.**
+**Слой — это реальный набор файловых изменений на диске, а не просто запись в истории сборки.**
 
 ---
 
-## 3) Which Dockerfile Instructions Create Real Filesystem Layers
+## 3) Какие инструкции Dockerfile создают файловые слои
 
-Dockerfile instructions split into filesystem-changing and metadata-changing categories.
+Инструкции Dockerfile делятся на два класса: изменяющие файловую систему и изменяющие только метаданные образа.
 
-### Filesystem-changing instructions
+### Инструкции, которые создают файловые дельты
 
-The instructions that normally create a new filesystem delta are:
+Обычно новый файловый слой создают:
 
 - `RUN`
 - `COPY`
 - `ADD`
 
-Why? Because they actually alter files in the image rootfs state.
+Причина: они реально изменяют состояние файлов в rootfs будущего образа.
 
-### Metadata-oriented instructions
+### Инструкции, которые в основном меняют метаданные
 
-Instructions such as `ENV`, `WORKDIR`, `CMD`, `ENTRYPOINT`, `EXPOSE`, `LABEL`, `USER` mostly update configuration fields in the image config JSON.
+Инструкции `ENV`, `WORKDIR`, `CMD`, `ENTRYPOINT`, `EXPOSE`, `LABEL`, `USER` в основном обновляют JSON-конфигурацию образа (например, `config.Env`, `config.WorkingDir`, `config.Cmd`).
 
-These instructions are still part of image history, but they typically do not add a new `diff/` payload containing filesystem content changes.
-
-How to phrase this in an interview:
-
-> “Some Dockerfile instructions modify bytes on disk, others modify only image configuration metadata. Both appear in history, but only filesystem-mutating steps produce layer file deltas.”
-
-That sentence usually signals deep understanding.
+Эти шаги отражаются в history образа, но обычно не добавляют новый `diff/`-слой с файловыми изменениями.
 
 ---
 
-## 4) Immutability: Why Docker Layers Are Frozen and Reusable
+## 4) Неизменяемость слоев (immutability): зачем она нужна
 
-The next core concept is **immutability**.
+Docker-слои адресуются по содержимому через digest (`sha256:...`).
 
-A layer is content-addressed by digest (for example `sha256:...`). The digest is derived from content. If content changes, the digest changes. Therefore, changed content cannot remain “the same layer”; it necessarily becomes a new layer.
+Если содержимое слоя изменилось хотя бы на один байт, digest станет другим. Значит, это уже новый слой, а не изменение старого «на месте».
 
-Why this matters in production:
+Что это дает на практике:
 
-1. **Deterministic caching:** build systems can safely reuse previous layers.
-2. **Deduplication:** identical layers are stored once even if referenced by many images.
-3. **Integrity:** digest references make tampering detectable.
-4. **Portability:** different hosts can fetch by digest and get exact same content.
+1. Детерминированный кэш сборки.
+2. Безопасную дедупликацию слоев.
+3. Проверяемую целостность данных по digest.
+4. Повторяемость сборок и pull на разных хостах.
 
-Practical storytelling example:
+Практический сценарий:
 
-If 100 services share the same Java base image, the Java-related base layers are physically stored once on the host. Each service contributes only its own app-specific layers, and each running container gets a small writable top layer.
+Если 100 сервисов используют один базовый Java-образ, общие базовые слои хранятся один раз. Каждый сервис добавляет только свои прикладные слои, а каждый контейнер — собственный writable-слой сверху.
 
-So instead of 100 full copies of a giant base filesystem, Docker reuses shared immutable layers and adds only small per-image/per-container differences.
-
----
-
-## 5) OverlayFS: How Linux “Glues” Layers at Runtime
-
-This is the mechanical heart of Docker storage behavior.
-
-OverlayFS combines multiple directories into a single unified mount view. For container runtime semantics, the most important terms are:
-
-- **LowerDir**: read-only stack of image layers.
-- **UpperDir**: writable layer unique to the container.
-- **WorkDir**: internal scratch area for overlay operations.
-- **MergedDir**: the final unified tree seen by the container process as `/`.
-
-Interview-friendly explanation:
-
-> “The container process does not manually traverse many layers. The kernel overlay module presents one merged filesystem. The process sees a normal rootfs, while OverlayFS resolves where each path actually comes from.”
-
-### Read behavior
-
-When a process reads a file path, OverlayFS checks UpperDir first. If not found there, it looks through lower layers from topmost to base. First match wins.
-
-### Write behavior (Copy-on-Write / copy-up)
-
-If a file exists only in a lower (read-only) layer and the process tries to modify it, OverlayFS performs a copy-up into UpperDir and then applies the write there.
-
-This gives two important properties:
-
-- lower layers remain immutable and shareable;
-- container writes remain isolated to that container.
-
-### Delete behavior (whiteout)
-
-A container cannot physically remove files from immutable lower layers. Deletion is expressed in UpperDir through whiteout semantics that hide lower objects in the merged view.
-
-So a deleted file inside a container is often “masked from view,” not erased from the underlying immutable base data.
-
-This detail is very interview-relevant because it explains why deleting files in a running container does not rewrite base image layers.
+Именно так Docker экономит гигабайты диска при массовом запуске сервисов.
 
 ---
 
-## 6) Manifest vs Image vs Container (Precise Definitions)
+## 5) OverlayFS: как ядро Linux склеивает слои
 
-These terms are often mixed up; interviewers intentionally test this.
+OverlayFS объединяет несколько директорий в один целостный mount view.
+
+Ключевые сущности:
+
+- **LowerDir** — стек read-only слоев образа.
+- **UpperDir** — writable-слой конкретного контейнера.
+- **WorkDir** — служебная рабочая область OverlayFS.
+- **MergedDir** — объединенное дерево, которое процесс контейнера видит как `/`.
+
+### Поведение при чтении
+
+При чтении пути ядро сначала проверяет `UpperDir`. Если файла там нет, поиск идет по `LowerDir` сверху вниз. Берется первое найденное совпадение.
+
+### Поведение при записи (Copy-on-Write / copy-up)
+
+Если файл существует только в read-only нижнем слое, при попытке записи ядро сначала копирует файл в `UpperDir` (copy-up), а затем применяет запись уже к этой копии.
+
+Следствия:
+
+- нижние слои остаются неизменными и переиспользуемыми;
+- изменения одного контейнера не ломают другие контейнеры.
+
+### Поведение при удалении (whiteout)
+
+Контейнер не может физически удалить файл из read-only нижнего слоя. Вместо этого в `UpperDir` создается специальная whiteout-семантика (часто в представлении слоя это `.wh.<имя>`), которая скрывает файл нижнего слоя из `MergedDir`.
+
+То есть «удалено в контейнере» обычно означает «скрыто в объединенном представлении», а не «стерто из базового immutable-слоя».
+
+---
+
+## 6) Manifest vs Image vs Container: точные определения
+
+Эти термины обозначают разные технические объекты.
 
 ### Manifest
 
-A **manifest** is a registry-side JSON descriptor that points to:
+**Manifest** — JSON-дескриптор в реестре, содержащий ссылки на:
 
-- config object digest,
-- ordered list of layer blob digests,
-- related media type and size metadata.
-
-Think of it as a cryptographic index card.
+- digest конфигурации,
+- упорядоченный список digest-ов layer blob,
+- служебные метаданные (media type, size).
 
 ### Image
 
-An **image** is the local resolved artifact composed of config metadata plus ordered immutable layers referenced by digest/tag.
+**Image** — локально разрешенный артефакт: конфигурация + упорядоченный набор immutable-слоев + ссылки по tag/digest.
 
-In short, image is a blueprint package, not a running entity.
+Образ не «бежит» сам по себе; это шаблон запуска.
 
 ### Container
 
-A **container** is runtime state: a process (or process group) launched with namespace/cgroup constraints and mounted merged rootfs plus one writable layer.
+**Container** — runtime-состояние процесса: namespaces, cgroups, merged rootfs и один writable upper layer.
 
-Short interview line:
+Коротко:
 
-- **Image** = immutable blueprint.
-- **Container** = active instance of that blueprint.
-
----
-
-## 7) 90-Second Interview Answer
-
-You can present it like this:
-
-1. Docker image is immutable metadata + filesystem layers.
-2. Layers are real on-disk deltas (commonly under `/var/lib/docker/overlay2/`).
-3. `RUN/COPY/ADD` usually create filesystem layer deltas; many other Dockerfile instructions modify config metadata only.
-4. Container startup uses Linux isolation primitives (namespaces/cgroups) and OverlayFS to create one merged root filesystem.
-5. Runtime writes go to container UpperDir via copy-on-write; deletes are represented by whiteouts.
-6. Because layers are immutable and content-addressed, many images/containers can share the same base layers efficiently.
-
-If you can explain these six points cleanly, this demonstrates strong Docker fundamentals.
+- **Image** = неизменяемый шаблон.
+- **Container** = запущенный экземпляр шаблона.
 
 ---
 
-## 8) Final Takeaway
+## 7) Краткий готовый ответ на собеседовании (90 секунд)
 
-Docker becomes much less mysterious when you map every concept to concrete Linux objects: **directories, hashes, mount behavior, and process isolation**.
+1. Docker-образ — это immutable-метаданные и слои файловой системы.
+2. Слои — реальные файловые дельты на диске (обычно в `/var/lib/docker/overlay2/`).
+3. `RUN/COPY/ADD` создают файловые дельты, а часть других инструкций Dockerfile меняет в основном конфигурацию образа.
+4. При запуске контейнера ядро Linux через namespaces/cgroups изолирует процесс, а OverlayFS дает ему единый merged rootfs.
+5. Записи идут в `UpperDir` через copy-on-write; удаления выражаются через whiteout.
+6. Благодаря immutability и content-addressing базовые слои эффективно переиспользуются между многими образами и контейнерами.
 
-That is exactly the level expected in serious backend, platform, and DevOps interviews.
+---
+
+## 8) Итог
+
+Docker перестает быть «магией», если каждое понятие привязано к конкретным объектам Linux: **директориям, хэшам, mount-механике и изоляции процессов**.
