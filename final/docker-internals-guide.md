@@ -29,7 +29,7 @@ You can repeat this model multiple times during the conversation because it is b
 
 ## 2) Docker Layers: Physical Reality on Disk, Not an Abstraction
 
-Many candidates describe layers too abstractly. A stronger explanation is to emphasize that a layer corresponds to concrete filesystem data.
+A Docker layer corresponds to concrete filesystem data.
 
 On Linux hosts using Docker’s `overlay2` storage driver, layer-related data is typically stored under:
 
@@ -52,7 +52,7 @@ The key interview message:
 
 ## 3) Which Dockerfile Instructions Create Real Filesystem Layers
 
-A frequent interview trap is confusion between filesystem changes and metadata changes.
+Dockerfile instructions split into filesystem-changing and metadata-changing categories.
 
 ### Filesystem-changing instructions
 
@@ -80,7 +80,7 @@ That sentence usually signals deep understanding.
 
 ## 4) Immutability: Why Docker Layers Are Frozen and Reusable
 
-The next concept is **immutability**, and this is where candidates can stand out.
+The next core concept is **immutability**.
 
 A layer is content-addressed by digest (for example `sha256:...`). The digest is derived from content. If content changes, the digest changes. Therefore, changed content cannot remain “the same layer”; it necessarily becomes a new layer.
 
@@ -168,23 +168,7 @@ Short interview line:
 
 ---
 
-## 7) Typical Interview Misconceptions and Better Answers
-
-### Misconception 1: “Container is a lightweight VM.”
-
-Better answer: a container is an isolated Linux process sharing the host kernel. Isolation is namespace/cgroup-based, not hypervisor-based.
-
-### Misconception 2: “Each container has its own full OS copy.”
-
-Better answer: containers share read-only image layers and differ mostly by their writable upper layers.
-
-### Misconception 3: “If I delete files in a container, I shrink the image.”
-
-Better answer: runtime deletion usually creates whiteout/hide semantics in the container writable layer; immutable base layers are unchanged.
-
----
-
-## 8) How to Tell This as a 90-Second Interview Story
+## 7) 90-Second Interview Answer
 
 You can present it like this:
 
@@ -195,11 +179,11 @@ You can present it like this:
 5. Runtime writes go to container UpperDir via copy-on-write; deletes are represented by whiteouts.
 6. Because layers are immutable and content-addressed, many images/containers can share the same base layers efficiently.
 
-If you can explain these six points cleanly, interviewers typically view your Docker fundamentals as strong.
+If you can explain these six points cleanly, this demonstrates strong Docker fundamentals.
 
 ---
 
-## Final Takeaway
+## 8) Final Takeaway
 
 Docker becomes much less mysterious when you map every concept to concrete Linux objects: **directories, hashes, mount behavior, and process isolation**.
 
