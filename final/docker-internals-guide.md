@@ -1,154 +1,121 @@
-# Docker Under the Hood: A Filesystem-and-Kernel-Level Guide
+# Docker Under the Hood: Filesystems, Kernel Mechanics, and Runtime Reality
 
-> Goal: understand Docker **without magic**, through Linux filesystem mechanics, metadata formats, and process isolation.
-
----
-
-## 0) Mental Model in One Minute
-
-Docker is not a mini-VM. In practice:
-
-1. **Image** = immutable stack of filesystem deltas + JSON metadata.
-2. **Container** = a normal Linux process started with:
-   - isolated namespaces (pid/net/mnt/uts/ipc/user)
-   - cgroups limits/accounting
-   - root filesystem assembled from image layers + writable layer
-3. **OverlayFS** in the Linux kernel presents those layers as one merged tree.
-
-So the “magic” is mostly:
-
-- content-addressable files on disk
-- OverlayFS mount options
-- OCI JSON descriptors
-- ordinary process creation (`clone`/`execve`) with namespace/cgroup setup
+> **Goal:** understand Docker without “magic” by tracing what happens in Linux filesystems, kernel namespaces/cgroups, and process runtime.
 
 ---
 
-## 1) Physical Nature of Docker Layers
+## 1) Mental Model: What a Container *Actually* Is
 
-## 1.1 What a layer really is
+A container is **not** a virtual machine.
 
-A Docker layer is a **real directory delta on disk** (plus metadata), not an abstract concept.
+- A VM boots a separate guest kernel.
+- A container is a **regular Linux process** running on the **host kernel**, but constrained by kernel primitives.
 
-For Docker Engine with `overlay2` driver, data is typically under:
+Three core building blocks:
+
+1. **Namespaces** — isolate what a process can see (PID tree, mounts, network interfaces, hostname, IPC, optionally user IDs).
+2. **cgroups** — control what a process can consume (CPU, memory, PIDs, I/O).
+3. **Union filesystem (OverlayFS)** — provides a merged root filesystem from immutable image layers plus one writable container layer.
+
+Analogy:
+
+- **Image** = architectural blueprint + fixed material list.
+- **Container** = construction crew actively building/running from that blueprint in a fenced zone.
+
+---
+
+## 2) Physical Nature of Docker Layers
+
+## 2.1 Layer = concrete filesystem delta on disk
+
+With Docker Engine on Linux using `overlay2`, layer data is typically in:
 
 - **`/var/lib/docker/overlay2/`**
 
-Each layer has content like:
+For layer/container directories, you’ll commonly see:
 
-- `diff/` — files introduced/changed by this layer delta
-- `link` and internal references for efficient mount argument length handling
-- `lower` (for non-base layers) — parent layer chain reference
-- `merged/` — runtime merged view (usually for active containers)
-- `work/` — OverlayFS workdir for kernel operations
+- `diff/` — the actual files in this delta.
+- `lower` — references to parent lower layers.
+- `merged/` — mounted unified view (for active containers).
+- `work/` — OverlayFS work directory.
+- `link` / `l/` indirection entries used by Docker to shorten long lowerdir paths.
 
-> Think: each layer is like a Git commit snapshot delta, but represented in filesystem structures optimized for union mounts.
+So “layer” is not abstract — it maps to real host filesystem data.
 
-## 1.2 Which Dockerfile instructions create filesystem layers
+## 2.2 Which Dockerfile instructions create filesystem layers
 
-Instructions that modify filesystem contents create new filesystem layers:
+Filesystem-changing instructions create delta layers:
 
-- **`RUN`** — executes commands; resulting file changes become a new layer delta.
-- **`COPY`** — copied files are added as layer changes.
-- **`ADD`** — similar to `COPY`, plus archive auto-extract / URL fetch behavior.
+- **`RUN`**
+- **`COPY`**
+- **`ADD`**
 
-### Example
+Why:
 
-```Dockerfile
-FROM eclipse-temurin:21-jre
-RUN apt-get update && apt-get install -y curl
-COPY app.jar /app/app.jar
-RUN useradd -r appuser
-```
+- `RUN` changes files by executing commands.
+- `COPY` adds/overwrites files from build context.
+- `ADD` does what `COPY` does, plus extras (like local tar auto-extract and URL source support in classic Docker behavior).
 
-Possible layer chain (simplified):
+## 2.3 Why `ENV`, `WORKDIR`, `CMD` are metadata (not fs deltas)
 
-1. Base image layers from `eclipse-temurin:21-jre`
-2. Layer A: apt index + installed packages
-3. Layer B: `/app/app.jar`
-4. Layer C: `/etc/passwd` update from `useradd`
+Instructions such as:
 
-## 1.3 Why `ENV`, `WORKDIR`, `CMD` usually do not create filesystem layers
+- `ENV`, `WORKDIR`, `CMD`, `ENTRYPOINT`, `EXPOSE`, `LABEL`, `USER`
 
-These instructions primarily alter **image configuration metadata** (JSON config), not file content:
+primarily update **image config JSON** fields (`config.Env`, `config.WorkingDir`, `config.Cmd`, etc.), rather than writing files into rootfs.
 
-- `ENV` -> `config.Env`
-- `WORKDIR` -> `config.WorkingDir`
-- `CMD` -> `config.Cmd`
-- `ENTRYPOINT` -> `config.Entrypoint`
-- `EXPOSE`, `LABEL`, `USER`, `STOPSIGNAL` -> config fields
+Important nuance:
 
-So they usually create a **new image history entry** and new config object, but no additional `diff/` filesystem delta if no file changes happen.
-
-> Important nuance: tooling may still record history items; “no layer” here means no new filesystem delta tar/diff layer.
+- Build history can still show these steps.
+- But they normally do **not** produce a new filesystem `diff/` payload.
 
 ---
 
-## 2) Layer Immutability and Reuse Economics
+## 3) Immutability: Why Layers Never Change In Place
 
-## 2.1 What immutability means here
+A layer is content-addressed by digest (`sha256:...`).
 
-After a layer is created and content-hashed, it is **immutable**:
+- If one byte changes, digest changes.
+- Therefore changed content becomes a **new layer**, never an in-place mutation.
 
-- bytes define digest (`sha256:...`)
-- if bytes change, digest changes, so it is a different layer
+Why this matters:
 
-This gives deterministic reuse and safe deduplication.
+- deterministic caching
+- safe deduplication
+- reliable integrity/signature chains
+- repeatable pulls/builds across hosts
 
-## 2.2 Why immutability is required
+## 3.1 Reuse economics: one Java base shared by many images
 
-If layer bytes could mutate in place:
+Suppose 100 services use `eclipse-temurin:21-jre`.
 
-- caches become invalid unpredictably
-- signatures/trust chains break
-- multiple images pointing to “same” digest could silently diverge
+On one host:
 
-With immutability:
-
-- digest uniquely identifies exact content forever
-- build cache lookup is reliable
-- registries and hosts deduplicate storage safely
-
-## 2.3 One Java base layer reused by 100 images
-
-Suppose 100 services all use `eclipse-temurin:21-jre` base.
-
-Disk-wise on one host:
-
-- base layers are stored once (content-addressed)
-- each service image stores only its extra deltas
-- each running container adds only a small writable upper layer
-
-ASCII view:
+- base layers are stored once
+- each service adds only its own small app-specific layers
+- each running container adds one writable layer
 
 ```text
-Shared immutable store
-┌──────────────────────────────────────────────┐
-│ Layer L0: debian base                        │  <- stored once
-│ Layer L1: JVM files (/opt/java/...)          │  <- stored once
-│ Layer L2: certs/timezone updates             │  <- stored once
-└──────────────────────────────────────────────┘
+Shared immutable layers (stored once):
+  L0 (OS), L1 (JRE), L2 (certs)
 
-Service A image = [L0,L1,L2,LA]
-Service B image = [L0,L1,L2,LB]
+Image A = L0+L1+L2+LA
+Image B = L0+L1+L2+LB
 ...
-Service Z image = [L0,L1,L2,LZ]
+Image Z = L0+L1+L2+LZ
 
-100 containers:
-  each -> read-only lower stack [L0,L1,L2,Lx] + own writable UpperDir
+Container A1 = (L0..LA) + UpperA1
+Container A2 = (L0..LA) + UpperA2
+Container B1 = (L0..LB) + UpperB1
 ```
 
-That is exactly where gigabytes are saved.
+This is where multi-gigabyte savings come from.
 
 ---
 
-## 3) Linux Kernel Mechanics: OverlayFS in Detail
+## 4) OverlayFS Internals: LowerDir, UpperDir, MergedDir
 
-## 3.1 OverlayFS mount anatomy
-
-Docker uses OverlayFS (`overlay2`) to build unified rootfs.
-
-Conceptual mount:
+OverlayFS mount conceptually looks like:
 
 ```bash
 mount -t overlay overlay \
@@ -156,168 +123,154 @@ mount -t overlay overlay \
   <merged>
 ```
 
-Key dirs:
+Components:
 
-- **LowerDir**: read-only image layers (possibly many)
-- **UpperDir**: container writable layer (one per container)
-- **WorkDir**: OverlayFS internal scratch/work area (same fs as upper)
-- **MergedDir**: the resulting unified tree seen by the container process as `/`
+- **LowerDir**: read-only image layer stack.
+- **UpperDir**: writable container layer.
+- **WorkDir**: internal work area required by overlayfs.
+- **MergedDir**: unified virtual tree seen by process as `/`.
 
-In Docker paths this commonly maps into subdirs under:
+## 4.1 Read path
 
-- `/var/lib/docker/overlay2/<id>/diff` (upper or layer diff)
-- `/var/lib/docker/overlay2/<id>/work`
-- `/var/lib/docker/overlay2/<id>/merged`
+When reading `/path/file`:
 
-## 3.2 How read path resolution works
+1. check UpperDir first
+2. if absent, walk LowerDir stack top-down
+3. first match wins
 
-When process opens `/etc/ssl/certs/ca-certificates.crt` in merged view:
+## 4.2 Write path (Copy-on-Write / copy-up)
 
-1. OverlayFS checks UpperDir first.
-2. If missing, scans lower stack from topmost lower to base.
-3. Returns first match.
+If file exists only in lower layer and process writes to it:
 
-So upper overrides lower, giving expected “latest change wins.”
+1. kernel copies object into UpperDir (copy-up)
+2. write occurs on upper copy
+3. lower object stays immutable
 
-## 3.3 Copy-on-Write (CoW) on file modification
+Implication: first write to large files may be expensive.
 
-If a file exists only in lower layers and process tries to modify it:
+## 4.3 Delete path (whiteout)
 
-1. Kernel copies file (and needed metadata) from lower to UpperDir (“copy up”).
-2. Write happens against copied upper file.
-3. Lower layer remains untouched (immutable).
+Container cannot delete from read-only lower layer directly.
 
-Effects:
+Instead OverlayFS records deletion in UpperDir with a **whiteout marker** (commonly `.wh.<name>` semantics in layer representation), hiding lower object from merged view.
 
-- first write to a large lower file can be expensive (copy-up cost)
-- subsequent writes are cheap (already upper-owned)
-
-Analogy: laminated blueprint pages (lower) cannot be edited; you photocopy page to your notebook (upper) and edit copy.
-
-## 3.4 Whiteout on deletion
-
-Container cannot delete from read-only lower directly. So deletion is represented in upper as a **whiteout marker**.
-
-Mechanism (conceptually):
-
-- create special marker in UpperDir for deleted path
-- during merged lookup, marker hides same-named object in lower layers
-
-Result: file appears deleted in container view, though bytes still exist in immutable lower storage.
-
-For directory replacement/opacity semantics, OverlayFS uses opaque directory markers (e.g., xattrs) to hide lower directory contents.
-
-ASCII example:
-
-```text
-Lower: /app/config.yaml
-Upper: /app/.wh.config.yaml   (whiteout marker)
-Merged view: /app/config.yaml  -> NOT VISIBLE
-```
+So “deleted” in container view often means “hidden by upper metadata,” not physically erased from immutable lower bytes.
 
 ---
 
-## 4) Manifest vs Image vs Container
+## 5) Manifest vs Image vs Container
 
-## 4.1 OCI/Docker distribution objects (registry side)
+## 5.1 Manifest (registry object)
 
-At registry/protocol level:
+An OCI/Docker **manifest JSON** references:
 
-- **Manifest** (JSON): points to config object + list of layer blobs (digests/sizes/mediaTypes)
-- **Config JSON**: runtime/build metadata (env, cmd, entrypoint, user, history, rootfs diff_ids)
-- **Layer blobs**: compressed tar archives with filesystem changes
+- config object digest
+- ordered layer blob digests
+- media types/sizes
 
-So manifest is like an index card saying “image = this config + these layer digests.”
+Think of manifest as an index card of cryptographic pointers.
 
-## 4.2 What “Image” means locally
+## 5.2 Image (local resolved artifact)
 
-Locally, “image” usually means the resolved tuple:
+Locally, an **image** is effectively:
 
-- config JSON
-- ordered layer set
-- tag/digest reference in image store
+- config JSON metadata
+- ordered immutable layer set
+- local tags/digest references in image store
 
-Analogy:
+## 5.3 Container (runtime state)
 
-- **Blueprint package** (image) = instructions + material list
-- **House** (container) = a built, running instance from blueprint
+A **container** is a running/stopped process context with:
 
-## 4.3 What “Container” physically is
+- namespace boundaries
+- cgroup constraints
+- merged rootfs mount
+- one writable upper layer
+- runtime metadata (state, logs, network endpoints)
 
-Container is not a special file format; it is a **running (or stopped) Linux process state** with metadata:
+Short version:
 
-- process created with namespaces/cgroups/seccomp/capabilities constraints
-- rootfs mounted as OverlayFS merged dir
-- writable UpperDir attached
-- runtime state files/logs/network namespace endpoints
-
-In short:
-
-- Image = immutable recipe + read-only content layers
-- Container = process execution context + one writable layer
+- **Image** = immutable blueprint.
+- **Container** = live execution instance.
 
 ---
 
-## 5) Data Path Walkthrough: `docker run myapp:1.0`
+## 6) Networking Under the Hood (Bridge + veth + NAT)
 
-1. Docker resolves `myapp:1.0` -> image manifest/config/layers.
-2. Missing layers are pulled by digest.
-3. Engine creates container-specific UpperDir + WorkDir.
-4. Kernel overlay mount constructed into MergedDir.
-5. OCI runtime (e.g., `runc`) sets namespaces/cgroups.
-6. Process starts with MergedDir as `/` (root filesystem).
-7. Runtime writes go to UpperDir (CoW/whiteout semantics).
+## 6.1 Bridge networking
+
+Default Docker networking typically uses Linux bridge `docker0`.
+
+For each container:
+
+1. kernel creates a **veth pair**
+2. one end stays on host bridge (`docker0`)
+3. other end moves into container net namespace as `eth0`
+4. container gets IP (often from `172.17.0.0/16`)
+
+That is plain Linux networking primitives — no VM switch required.
+
+## 6.2 Port publishing (`-p 8080:80`)
+
+Docker programs host packet rules (historically iptables; on newer systems this may map through nftables backend).
+
+Mechanism is DNAT/SNAT in host networking stack so host port traffic is translated/routed into container IP:port.
+
+So external clients hit host:8080, kernel rewrites/routes to container:80.
 
 ---
 
-## 6) Practical Observability Commands
+## 7) Observability: Verify on a Real Host
 
-Useful commands for verification on Linux host:
+Useful commands:
 
 ```bash
 docker image inspect <image>
 docker inspect <container>
 mount | grep overlay
-cat /proc/<container-pid>/mountinfo
-sudo ls /var/lib/docker/overlay2/
+cat /proc/<pid>/mountinfo
+ip link show
+ip netns list   # if namespaces are exposed via iproute2 helpers
+iptables -t nat -S || true
+nft list ruleset || true
 ```
 
-What to check:
+Look for:
 
-- `GraphDriver` fields (`LowerDir`, `UpperDir`, `MergedDir`, `WorkDir`)
-- exact overlay mount options in `mountinfo`
-- how deletions produce whiteout entries in upper layer
-
----
-
-## 7) Common Misconceptions (and precise correction)
-
-- “Container = lightweight VM.”
-  - More precise: container = isolated Linux process group sharing host kernel.
-- “Each container stores full filesystem copy.”
-  - More precise: shared immutable lowers + tiny writable upper.
-- “Deleting file in container shrinks image.”
-  - More precise: deletion in running container creates whiteout in upper; base layers unchanged.
+- `GraphDriver` paths (`LowerDir`, `UpperDir`, `MergedDir`, `WorkDir`)
+- overlay mount options
+- veth endpoints and bridge attachments
+- NAT rules for published ports
 
 ---
 
-## 8) Quick Recap Table
+## 8) Fast Misconception Corrections
 
-| Term | Physical reality | Mutable? | Shared? |
+- “Container is a lightweight VM.”
+  - More accurate: isolated process sharing host kernel.
+- “Each container has full OS copy.”
+  - More accurate: shared lower layers + private writable upper.
+- “Deleting file in container removes it from image.”
+  - More accurate: deletion is represented by whiteout/hiding in upper layer.
+
+---
+
+## 9) Recap Table
+
+| Object | Physical reality | Mutable? | Shared? |
 |---|---|---:|---:|
-| Layer | Filesystem delta blob/dir + hash | No | Yes |
-| Image | Metadata (config JSON) + ordered layer references | Effectively no (new image on change) | Yes |
-| Container UpperDir | Writable delta for one container | Yes | No |
-| Container process | Linux process with namespaces/cgroups | Runtime state changes | N/A |
-| MergedDir | OverlayFS unified mount view | Virtual view | Per container mount |
+| Layer | Content-addressed filesystem delta | No | Yes |
+| Image | Config JSON + ordered layer references | Rebuilt on change | Yes |
+| Container upper layer | Writable overlay delta | Yes | No |
+| Container | Linux process + namespace/cgroup state | Runtime mutable | N/A |
+| Merged rootfs | OverlayFS virtual mount view | Virtual | Per container mount |
 
 ---
 
-## Final Analogy (Blueprint + Layer Cake)
+## Final Analogy: Layer Cake + Tracing Paper
 
-- **Image** is blueprint + ingredient list.
-- **Layers** are pre-baked cake sheets stored once in warehouse.
-- **Container** is a served slice where waiter can add cream on top (UpperDir).
-- Removing a cherry from a shared sheet is impossible directly, so waiter places a “hide cherry” note (whiteout) on your slice.
+- Immutable layers are pre-baked cake sheets in cold storage.
+- Container upper layer is your personal frosting layer.
+- If you “remove” a cherry from shared sheet, you cannot erase the original; you place a “hide cherry” note (whiteout) on your own tracing paper.
 
-No magic: just hashes, dirs, mounts, and processes.
+Docker feels magical only until you map each concept to a concrete Linux primitive: **directories, hashes, mounts, network devices, and processes**.
