@@ -141,6 +141,8 @@ Application Data            -------------------->
                             <-------------------- Application Data
 ```
 
+![Описание картинки](https://habrastorage.org/r/w1560/files/e52/387/364/e5238736493f41489f5df57f94310962.png)
+
 Смысл по блокам:
 
 1. **SYN / SYN ACK / ACK** — TCP-соединение установлено.
